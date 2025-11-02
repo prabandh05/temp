@@ -1,13 +1,18 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Team, Player, Match, Attendance, Leaderboard
+from .models import Team, Player, Match, Attendance, Leaderboard,Coach
 
 User = get_user_model()
 
 class UserPublicSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ("id", "username", "email")
+        fields = ['id', 'username', 'email'] 
+        
+class UserProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'role']
 
 class TeamCreateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -21,11 +26,12 @@ class TeamSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 class PlayerSerializer(serializers.ModelSerializer):
-    team_name = serializers.CharField(source='team.name', read_only=True)
+    user = UserProfileSerializer(read_only=True)
+    team = TeamSerializer(read_only=True)
 
     class Meta:
         model = Player
-        fields = '__all__'
+        fields = ['id', 'user', 'bio', 'team', 'joined_at']
 
 class MatchCreateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -56,3 +62,10 @@ class LeaderboardSerializer(serializers.ModelSerializer):
     class Meta:
         model = Leaderboard
         fields = "__all__"
+        
+class CoachSerializer(serializers.ModelSerializer):
+    user = UserProfileSerializer(read_only=True)
+
+    class Meta:
+        model = Coach
+        fields = ['id', 'user', 'experience', 'specialization']
