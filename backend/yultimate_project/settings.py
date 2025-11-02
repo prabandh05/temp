@@ -15,7 +15,7 @@ https://docs.djangoproject.com/en/5.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
-GEMINI_API_KEY = config('GEMINI_API_KEY')
+GEMINI_API_KEY = config('GEMINI_API_KEY', default=None)
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -88,9 +88,9 @@ WSGI_APPLICATION = 'yultimate_project.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'yultimate_db',  # Just the database name
+        'NAME': 'temp_social',  # Just the database name
         'USER': 'postgres',
-        'PASSWORD': 'abdevilliers17',  # Replace with your actual password
+        'PASSWORD': 'password',  # Replace with your actual password
         'HOST': 'localhost',
         'PORT': '5432',
     }
