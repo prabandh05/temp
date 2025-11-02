@@ -2,7 +2,9 @@
 // src/App.js
 import React from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
-import Login from "./components/Login";
+import Dashboard from "./pages/Dashboard";
+import Signup from "./pages/Signup";
+import Login from "./pages/Login";
 import PlayerDashboard from "./pages/PlayerDashboard";
 import CoachDashboard from "./pages/CoachDashboard";
 import ManagerDashboard from "./pages/ManagerDashboard";
@@ -12,7 +14,10 @@ function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/" element={<Login />} />
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/signup" element={<Signup />} />
+        <Route path="/player" element={<PlayerDashboard />} />
         <Route
           path="/player-dashboard"
           element={

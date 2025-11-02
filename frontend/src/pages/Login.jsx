@@ -32,10 +32,15 @@ const Login = () => {
       setError("");
 
       // Redirect based on role
-      if (role === "player") navigate("/player-dashboard");
-      else if (role === "coach") navigate("/coach-dashboard");
-      else if (role === "manager") navigate("/manager-dashboard");
-      else navigate("/");
+    if (role === "player") navigate("/player-dashboard");
+    else if (role === "coach") navigate("/coach-dashboard");
+    else if (role === "manager") navigate("/manager-dashboard");
+    else if (role === "admin") {
+      // redirect to Django admin
+      window.location.href = `${API_URL}/admin/`;
+    } else {
+      navigate("/");
+    }
 
     } catch (err) {
       console.error("Login failed:", err.response?.data || err.message);
