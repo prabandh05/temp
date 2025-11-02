@@ -15,6 +15,9 @@ from rest_framework.authtoken.models import Token
 
 from rest_framework.permissions import IsAuthenticated
 from functools import wraps
+from django.contrib.auth.models import User
+
+
 
 
 
@@ -110,6 +113,8 @@ def role_required(allowed_roles):
             return view_func(request, *args, **kwargs)
         return _wrapped
     return decorator
+
+
 
 # ------------------ TEAM ------------------
 class TeamViewSet(viewsets.ModelViewSet):
@@ -279,9 +284,7 @@ def register_user(request):
             username=data.get("username"),
             email=data.get("email"),
             password=make_password(data.get("password")),
-            is_player=data.get("is_player", False),
-            is_coach=data.get("is_coach", False),
-            is_admin=data.get("is_admin", False),
+            role=data.get("role", "player")
         )
 
         return Response(

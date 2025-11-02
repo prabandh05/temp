@@ -8,6 +8,7 @@ from .views import (
 )
 from .views import CustomObtainAuthToken, RoleAwareProfileView, player_profile, coach_profile
 
+
 router = routers.DefaultRouter()
 router.register(r'teams', TeamViewSet)
 router.register(r'players', PlayerViewSet)
@@ -20,7 +21,7 @@ urlpatterns = [
     path('', include(router.urls)),
     path('predict-player/', predict_player_start, name='predict_player_start'),
     path('player-insight/', player_insight, name='player_insight'),
-    path('register/', register_user, name='register_user'),
+    path('auth/signup/', register_user, name='register_user'),
     path('auth/login/', CustomObtainAuthToken.as_view(), name='api-login'),
     path('profile/', RoleAwareProfileView.as_view(), name='api-profile'),
     path('player/profile/', player_profile, name='player-profile'),   # optional

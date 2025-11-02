@@ -21,10 +21,14 @@ headers: {
 
 // attach token from localStorage automatically if present
 api.interceptors.request.use((config) => {
-const token = localStorage.getItem("access_token");
-if (token) config.headers.Authorization = `Bearer ${token}`;
-return config;
+  const token = localStorage.getItem("token");
+  if (token) {
+    // switch to Bearer if JWT:
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
 });
+
 
 
 export default api;

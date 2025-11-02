@@ -1,3 +1,4 @@
+// frontend/src/pages/Login.jsx
 import React, { useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
@@ -9,7 +10,6 @@ const Login = () => {
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState(""); // added role selection
   const [error, setError] = useState("");
 
   const handleLogin = async (e) => {
@@ -32,12 +32,18 @@ const Login = () => {
       setError("");
 
       // Redirect based on role
-    if (role === "player") navigate("/player-dashboard");
-    else if (role === "coach") navigate("/coach-dashboard");
-    else if (role === "manager") navigate("/manager-dashboard");
-    else if (role === "admin") {
-      // redirect to Django admin
+      
+     // Redirect based on role
+    if (response.data.is_superuser || response.data.is_staff) {
       window.location.href = `${API_URL}/admin/`;
+    } else if (role === "admin") {
+      navigate("/admin-dashboard");
+    } else if (role === "player") {
+      navigate("/player-dashboard");
+    } else if (role === "coach") {
+      navigate("/coach-dashboard");
+    } else if (role === "manager") {
+      navigate("/manager-dashboard");
     } else {
       navigate("/");
     }
@@ -52,7 +58,7 @@ const Login = () => {
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
       <div className="bg-white shadow-lg rounded-xl p-8 w-full max-w-sm">
         <h2 className="text-2xl font-semibold mb-6 text-center">Sign In</h2>
-        
+
         <form onSubmit={handleLogin} className="space-y-4">
           <input
             type="text"
@@ -71,19 +77,6 @@ const Login = () => {
             required
             className="w-full p-2 border rounded-md"
           />
-
-          {/* Role Selection */}
-          <select
-            value={role}
-            onChange={(e) => setRole(e.target.value)}
-            required
-            className="w-full p-2 border rounded-md"
-          >
-            <option value="">Select Role</option>
-            <option value="player">Player</option>
-            <option value="coach">Coach</option>
-            <option value="manager">Manager</option>
-          </select>
 
           <button
             type="submit"
