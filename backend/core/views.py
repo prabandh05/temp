@@ -9,6 +9,10 @@ from rest_framework.decorators import action, api_view, permission_classes
 from django.db.models import F
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
+from rest_framework.authtoken.views import ObtainAuthToken
+from rest_framework.authtoken.models import Token
+
+
 
 
 from .models import Team, Player, Match, Attendance, Leaderboard
@@ -22,6 +26,20 @@ from .serializers import (
 
 from .services.model_service import predict_player_start_from_features
 from ai_module.services.gemini_client import gemini_summarize_player
+#------------------Authentication View------------------
+class CustomObtainAuthToken(ObtainAuthToken):
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        token = Token.objects.get(key=response.data['token'])
+        user = token.user
+        return Response({
+            'token': token.key,
+            'user_id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'role': user.role,   # from our new column
+        })
+
 
 # ------------------ TEAM ------------------
 class TeamViewSet(viewsets.ModelViewSet):

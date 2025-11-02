@@ -42,12 +42,24 @@ INSTALLED_APPS = [
     # Third-party apps
     'rest_framework',
     'corsheaders',  # Add this
-    'django_filters', 
+    'django_filters',
+    'rest_framework.authtoken', 
 
     # Your apps
     'core',
     'ai_an'
 ]
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}
+
 
 
 MIDDLEWARE = [

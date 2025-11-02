@@ -1,13 +1,35 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
-
-
+from django.utils.translation import gettext_lazy as _
+from django.contrib.auth.models import AbstractUser
 
 class User(AbstractUser):
-    is_player = models.BooleanField(default=False)
-    is_coach = models.BooleanField(default=False)
-    is_admin = models.BooleanField(default=False)
+    class Roles(models.TextChoices):
+        PLAYER = "player", _("Player")
+        COACH = "coach", _("Coach")
+        MANAGER = "manager", _("Manager")
+        ADMIN = "admin", _("Admin")  # can keep for clarity, or you can use is_staff/is_superuser
+
+    role = models.CharField(
+        max_length=20,
+        choices=Roles.choices,
+        default=Roles.PLAYER,
+    )
+
+    # remove is_player/is_coach/is_admin fields afterwards
+    def is_player(self):
+        return self.role == self.Roles.PLAYER
+
+    def is_coach(self):
+        return self.role == self.Roles.COACH
+
+    def is_manager(self):
+        return self.role == self.Roles.MANAGER
+
+    def is_admin_role(self):
+        return self.role == self.Roles.ADMIN
+
 
     def __str__(self):
         return self.username

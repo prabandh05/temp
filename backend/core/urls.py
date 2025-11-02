@@ -6,6 +6,7 @@ from .views import (
     AttendanceViewSet, LeaderboardViewSet,
     predict_player_start, player_insight, register_user
 )
+from .views import CustomObtainAuthToken
 
 router = routers.DefaultRouter()
 router.register(r'teams', TeamViewSet)
@@ -15,10 +16,12 @@ router.register(r'attendance', AttendanceViewSet)
 router.register(r'leaderboard', LeaderboardViewSet)
 
 urlpatterns = [
+    
     path('', include(router.urls)),
     path('predict-player/', predict_player_start, name='predict_player_start'),
     path('player-insight/', player_insight, name='player_insight'),
     path('register/', register_user, name='register_user'),
+    path('auth/login/', CustomObtainAuthToken.as_view(), name='api-login'),
     
     # ✅ Add JWT authentication endpoints
     path('token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
