@@ -6,12 +6,12 @@ from django.contrib.auth.models import AbstractUser
 import datetime
 # -----------------------------
 
-# Generate player id
-def generate_player_id():
-    """Generate unique player ID like P25xxxxx"""
-    current_year = str(datetime.date.today().year)[-2:]  # e.g. '25'
-    count = Player.objects.count() + 1
-    return f"P{current_year}{count:05d}"  # -> P2500001
+# Generate player id - REMOVED from here, will be generated in serializer for robustness.
+# def generate_player_id():
+#     """Generate unique player ID like P25xxxxx"""
+#     current_year = str(datetime.date.today().year)[-2:]  # e.g. '25'
+#     count = Player.objects.count() + 1
+#     return f"P{current_year}{count:05d}"  # -> P2500001
 
 
 class User(AbstractUser):
@@ -180,6 +180,7 @@ class RunningStats(SportStatsBase):
 class Achievement(models.Model):
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="achievements")
     match = models.ForeignKey('Match', on_delete=models.SET_NULL, null=True, blank=True)
+    sport = models.ForeignKey('Sport', on_delete=models.SET_NULL, null=True, blank=True)
     tournament_name = models.CharField(max_length=100, blank=True, null=True)
     title = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
@@ -263,3 +264,46 @@ class Leaderboard(models.Model):
 
     def __str__(self):
         return f"{self.player.user.username} - {self.score}"
+
+# -----------------------------
+# Performance score over time (weekly)
+# -----------------------------
+class PerformanceScore(models.Model):
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="performance_scores")
+    week_start = models.DateField(help_text="Start of ISO week (Monday)")
+    score = models.FloatField(default=0.0)
+
+    class Meta:
+        unique_together = ("player", "week_start")
+        ordering = ["-week_start"]
+
+    def __str__(self):
+        return f"{self.player.user.username} @ {self.week_start}: {self.score}"
+
+
+# -----------------------------
+# Coaching sessions and attendance
+# -----------------------------
+class CoachingSession(models.Model):
+    coach = models.ForeignKey(Coach, on_delete=models.CASCADE)
+    team = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, blank=True)
+    sport = models.ForeignKey(Sport, on_delete=models.SET_NULL, null=True, blank=True)
+    session_date = models.DateTimeField(default=timezone.now)
+    title = models.CharField(max_length=120, blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{getattr(self.coach.user, 'username', 'Coach')} session on {self.session_date.date()}"
+
+
+class SessionAttendance(models.Model):
+    session = models.ForeignKey(CoachingSession, on_delete=models.CASCADE, related_name="attendances")
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="session_attendances")
+    attended = models.BooleanField(default=True)
+    rating = models.PositiveIntegerField(default=0, help_text="Optional per-session rating by coach")
+
+    class Meta:
+        unique_together = ("session", "player")
+
+    def __str__(self):
+        return f"{self.player} - {self.session} ({'Present' if self.attended else 'Absent'})"

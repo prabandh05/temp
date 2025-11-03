@@ -1,20 +1,18 @@
 # core/utils.py
-from .models import Player, Leaderboard, Match, Attendance
-from django.db.models import Sum
+from .models import Player, Leaderboard, PlayerSportProfile
 
 def recalc_leaderboard():
     """
-    Simple example: compute leaderboard by summing goals from Attendance or Match results.
-    Adjust scoring logic as needed (wins = 3 points etc).
+    Recalculate leaderboard by aggregating PlayerSportProfile.career_score
+    across all sports for each player.
     """
-    # Example using Attendance goals field (if present)
-    player_goals = {}
-    for att in Attendance.objects.all():
-        pid = att.player.id
-        player_goals[pid] = player_goals.get(pid, 0) + (getattr(att, "goals", 0) or 0)
+    # Sum career_score per player
+    totals_by_player = {}
+    for profile in PlayerSportProfile.objects.select_related("player").all():
+        pid = profile.player_id
+        totals_by_player[pid] = totals_by_player.get(pid, 0) + float(profile.career_score or 0)
 
-    # Also you may add match-based points; omitted for brevity
-    # Update Leaderboard table
+    # Rewrite Leaderboard with the totals
     Leaderboard.objects.all().delete()
-    for pid, score in player_goals.items():
-        Leaderboard.objects.create(player_id=pid, score=score)
+    for pid, score in totals_by_player.items():
+        Leaderboard.objects.create(player_id=pid, score=int(score))

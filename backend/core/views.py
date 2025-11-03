@@ -22,13 +22,16 @@ from django.contrib.auth.models import User
 
 
 
-from .models import Team, Player, Match, Attendance, Leaderboard
+from .models import (
+    Team, Player, Match, Attendance, Leaderboard, Sport, 
+    PlayerSportProfile, PerformanceScore, CoachingSession, SessionAttendance
+)
 from .serializers import (
     TeamCreateSerializer, TeamSerializer,
     MatchCreateSerializer, MatchSerializer,
     AttendanceCreateSerializer, AttendanceSerializer,
     LeaderboardSerializer, UserPublicSerializer,
-    PlayerSerializer
+    PlayerSerializer, UserRegistrationSerializer
 )
 from rest_framework.views import APIView
 from .serializers import UserProfileSerializer, PlayerSerializer, CoachSerializer
@@ -136,6 +139,9 @@ class PlayerViewSet(viewsets.ModelViewSet):
     queryset = Player.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
     serializer_class = PlayerSerializer
+    # Enable filtering and ordering
+    filterset_fields = ["team__id", "coach__id"]
+    ordering_fields = ["joined_at"]
 
 
 # ------------------ MATCH ------------------
@@ -147,6 +153,10 @@ class MatchViewSet(viewsets.ModelViewSet):
         if self.action in ("create", "update", "partial_update"):
             return MatchCreateSerializer
         return MatchSerializer
+
+    # Enable filtering and ordering
+    filterset_fields = ["team1__id", "team2__id", "is_completed", "date"]
+    ordering_fields = ["date"]
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     def finalize(self, request, pk=None):
@@ -267,34 +277,17 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
 @permission_classes([AllowAny])
 def register_user(request):
     """
-    Register a new user (player, coach, or admin).
-    Example JSON:
-    {
-        "username": "john_doe",
-        "email": "john@example.com",
-        "password": "secret123",
-        "is_player": true,
-        "is_coach": false
-    }
+    Handles user registration using the UserRegistrationSerializer.
     """
-    data = request.data
-    try:
-        if User.objects.filter(username=data.get("username")).exists():
-            return Response({"error": "Username already exists"}, status=status.HTTP_400_BAD_REQUEST)
-
-        user = User.objects.create(
-            username=data.get("username"),
-            email=data.get("email"),
-            password=make_password(data.get("password")),
-            role=data.get("role", "player")
-        )
-
-        return Response(
-            {"message": "User registered successfully", "user_id": user.id},
-            status=status.HTTP_201_CREATED
-        )
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    serializer = UserRegistrationSerializer(data=request.data)
+    if serializer.is_valid(raise_exception=True):
+        user = serializer.save()
+        return Response({
+            "message": "User registered successfully",
+            "user_id": user.id,
+            "username": user.username,
+            "role": user.role
+        }, status=status.HTTP_201_CREATED)
 
 
 # ------------------ PROFILE VIEWS ------------------
@@ -334,3 +327,229 @@ def coach_profile(request):
     except Coach.DoesNotExist:
         return Response({"error": "Coach profile not found"}, 
                         status=status.HTTP_404_NOT_FOUND)
+
+
+# ------------------ DASHBOARDS ------------------
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def player_dashboard(request):
+    user = request.user
+    if user.role != user.Roles.PLAYER:
+        return Response({"detail": "Players only"}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        player = user.player
+    except Player.DoesNotExist:
+        return Response({"detail": "Player profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    profiles = PlayerSportProfile.objects.filter(player=player).select_related("sport", "team", "coach")
+
+    from .models import Achievement  # local import to avoid circulars
+    achievements = Achievement.objects.filter(player=player).order_by("-date_awarded")[:10]
+
+    # Build per-sport stats and ranks
+    def get_stats_and_rank(profile):
+        sport_name = (profile.sport.name if profile.sport else "").lower()
+        payload = {
+            "sport": profile.sport.name if profile.sport else None,
+            "sport_type": getattr(profile.sport, "sport_type", None) if profile.sport else None,
+            "team": profile.team.name if profile.team else None,
+            "coach": getattr(profile.coach.user, "username", None) if profile.coach else None,
+            "career_score": profile.career_score,
+            "joined_date": profile.joined_date,
+            "is_active": profile.is_active,
+            "stats": {},
+            "ranks": {},
+            "achievements": [],
+            "performance": {"series": []},
+            "attendance": {"total_sessions": 0, "attended": 0},
+        }
+        # Collect stats and compute ranks
+        if sport_name == "cricket":
+            st = getattr(profile, "cricket_stats", None)
+            st = st.first() if hasattr(st, "first") else None
+            if st:
+                payload["stats"] = {
+                    "runs": st.runs,
+                    "wickets": st.wickets,
+                    "average": st.average,
+                    "strike_rate": st.strike_rate,
+                    "matches_played": st.matches_played,
+                }
+                # Ranks (higher better)
+                all_stats = []
+                for p in PlayerSportProfile.objects.filter(sport__name__iexact="Cricket"):
+                    s = getattr(p, "cricket_stats", None)
+                    s = s.first() if hasattr(s, "first") else None
+                    if s:
+                        all_stats.append({"profile_id": p.id, "runs": s.runs, "wickets": s.wickets, "average": s.average, "strike_rate": s.strike_rate})
+                def rank(metric, reverse=True):
+                    arr = sorted(all_stats, key=lambda x: x.get(metric) or 0, reverse=reverse)
+                    positions = {x["profile_id"]: i+1 for i, x in enumerate(arr)}
+                    return positions.get(profile.id)
+                payload["ranks"] = {
+                    "runs": rank("runs", True),
+                    "wickets": rank("wickets", True),
+                    "average": rank("average", True),
+                    "strike_rate": rank("strike_rate", True),
+                    "total_players": len(all_stats),
+                }
+        elif sport_name == "football":
+            st = getattr(profile, "football_stats", None)
+            st = st.first() if hasattr(st, "first") else None
+            if st:
+                payload["stats"] = {
+                    "goals": st.goals,
+                    "assists": st.assists,
+                    "tackles": st.tackles,
+                    "matches_played": st.matches_played,
+                }
+                all_stats = []
+                for p in PlayerSportProfile.objects.filter(sport__name__iexact="Football"):
+                    s = getattr(p, "football_stats", None)
+                    s = s.first() if hasattr(s, "first") else None
+                    if s:
+                        all_stats.append({"profile_id": p.id, "goals": s.goals, "assists": s.assists, "tackles": s.tackles})
+                def rank(metric, reverse=True):
+                    arr = sorted(all_stats, key=lambda x: x.get(metric) or 0, reverse=reverse)
+                    positions = {x["profile_id"]: i+1 for i, x in enumerate(arr)}
+                    return positions.get(profile.id)
+                payload["ranks"] = {
+                    "goals": rank("goals", True),
+                    "assists": rank("assists", True),
+                    "tackles": rank("tackles", True),
+                    "total_players": len(all_stats),
+                }
+        elif sport_name == "basketball":
+            st = getattr(profile, "basketball_stats", None)
+            st = st.first() if hasattr(st, "first") else None
+            if st:
+                payload["stats"] = {
+                    "points": st.points,
+                    "rebounds": st.rebounds,
+                    "assists": st.assists,
+                    "matches_played": st.matches_played,
+                }
+                all_stats = []
+                for p in PlayerSportProfile.objects.filter(sport__name__iexact="Basketball"):
+                    s = getattr(p, "basketball_stats", None)
+                    s = s.first() if hasattr(s, "first") else None
+                    if s:
+                        all_stats.append({"profile_id": p.id, "points": s.points, "rebounds": s.rebounds, "assists": s.assists})
+                def rank(metric, reverse=True):
+                    arr = sorted(all_stats, key=lambda x: x.get(metric) or 0, reverse=reverse)
+                    positions = {x["profile_id"]: i+1 for i, x in enumerate(arr)}
+                    return positions.get(profile.id)
+                payload["ranks"] = {
+                    "points": rank("points", True),
+                    "rebounds": rank("rebounds", True),
+                    "assists": rank("assists", True),
+                    "total_players": len(all_stats),
+                }
+        elif sport_name == "running":
+            st = getattr(profile, "running_stats", None)
+            st = st.first() if hasattr(st, "first") else None
+            if st:
+                payload["stats"] = {
+                    "total_distance_km": st.total_distance_km,
+                    "best_time_seconds": st.best_time_seconds,
+                    "events_participated": st.events_participated,
+                    "matches_played": st.matches_played,
+                }
+                all_stats = []
+                for p in PlayerSportProfile.objects.filter(sport__name__iexact="Running"):
+                    s = getattr(p, "running_stats", None)
+                    s = s.first() if hasattr(s, "first") else None
+                    if s:
+                        all_stats.append({"profile_id": p.id, "total_distance_km": s.total_distance_km, "best_time_seconds": s.best_time_seconds})
+                def rank(metric, reverse=True):
+                    arr = sorted(all_stats, key=lambda x: x.get(metric) or 0, reverse=reverse)
+                    positions = {x["profile_id"]: i+1 for i, x in enumerate(arr)}
+                    return positions.get(profile.id)
+                payload["ranks"] = {
+                    "total_distance_km": rank("total_distance_km", True),
+                    "best_time_seconds": rank("best_time_seconds", False),
+                    "total_players": len(all_stats),
+                }
+        # Achievements filtered by sport
+        from .models import Achievement as Ach
+        sport_obj = profile.sport
+        ach_qs = Ach.objects.filter(player=player)
+        if sport_obj:
+            ach_qs = ach_qs.filter(sport=sport_obj)
+        payload["achievements"] = [
+            {"title": a.title, "tournament": a.tournament_name, "date": a.date_awarded}
+            for a in ach_qs.order_by("-date_awarded")[:10]
+        ]
+
+        # Performance series from session ratings for this sport
+        ratings_qs = SessionAttendance.objects.filter(player=player)
+        if sport_obj:
+            ratings_qs = ratings_qs.filter(session__sport=sport_obj)
+        ratings_qs = ratings_qs.select_related("session").order_by("session__session_date", "id")
+        total_r = 0.0
+        count_r = 0
+        series = []
+        for sa in ratings_qs:
+            r = sa.rating or 0
+            if r < 0:
+                r = 0
+            if r > 10:
+                r = 10
+            count_r += 1
+            total_r += float(r)
+            avg = total_r / count_r
+            series.append({"index": count_r, "average": round(avg, 2)})
+        payload["performance"] = {"series": series}
+
+        # Attendance summary for this sport
+        total_sessions = ratings_qs.count()
+        attended_sessions = ratings_qs.filter(attended=True).count()
+        payload["attendance"] = {"total_sessions": total_sessions, "attended": attended_sessions}
+
+        return payload
+
+    profile_blocks = [get_stats_and_rank(p) for p in profiles]
+
+    # Available sports and inferred primary sport
+    all_sports = list(Sport.objects.values("name", "sport_type"))
+    primary_profile = profiles.order_by("joined_date").first() if hasattr(profiles, "order_by") else (profiles[0] if profiles else None)
+    primary_sport = primary_profile.sport.name if primary_profile and primary_profile.sport else None
+
+    # Include player_id explicitly for UI
+    player_payload = PlayerSerializer(player).data
+    player_payload["player_id"] = player.player_id
+
+    return Response({
+        "player": player_payload,
+        "profiles": profile_blocks,
+        "available_sports": all_sports,
+        "primary_sport": primary_sport,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def coach_dashboard(request):
+    user = request.user
+    if user.role != user.Roles.COACH:
+        return Response({"detail": "Coaches only"}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        coach = user.coach
+    except Coach.DoesNotExist:
+        return Response({"detail": "Coach profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    teams = Team.objects.filter(coach=coach)
+    players = Player.objects.filter(coach=coach).select_related("user", "team")
+
+    return Response({
+        "teams": [{"id": t.id, "name": t.name} for t in teams],
+        "players": [
+            {
+                "id": p.id,
+                "username": p.user.username,
+                "team": p.team.name if p.team else None,
+            } for p in players
+        ],
+    })

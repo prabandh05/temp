@@ -100,7 +100,7 @@ WSGI_APPLICATION = 'yultimate_project.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'temp_social',  # Just the database name
+        'NAME': 'temp_social',  # Fresh database name
         'USER': 'postgres',
         'PASSWORD': 'password',  # Replace with your actual password
         'HOST': 'localhost',

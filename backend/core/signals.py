@@ -5,7 +5,7 @@ from django.db import transaction
 from django.db.models import Max
 import datetime
 
-from .models import User, Player ,PlayerSportProfile, CricketStats
+from .models import User, Player, Coach, PlayerSportProfile, CricketStats
 
 
 def _next_player_id():
@@ -47,6 +47,22 @@ def create_or_update_player(sender, instance, created, **kwargs):
                 instance.player.player_id = _next_player_id()
                 instance.player.save()
                 print(f"🛠️ Added missing player_id for {instance.username}")
+
+
+@receiver(post_save, sender=User)
+def create_or_update_coach(sender, instance, created, **kwargs):
+    if instance.role != User.Roles.COACH:
+        return
+
+    # If newly created or role changed to coach
+    role_changed = hasattr(instance, "_old_role") and instance._old_role != User.Roles.COACH
+
+    if created or role_changed:
+        with transaction.atomic():
+            # Create only if not already existing
+            if not hasattr(instance, "coach"):
+                Coach.objects.create(user=instance)
+                print(f"✅ Auto-created coach for {instance.username}")
                 
                 
                 
@@ -65,25 +81,6 @@ def store_old_role(sender, instance, **kwargs):
 # Sport Profile Signals
 #-----------------------------
 
-#cricket profile creation
-@receiver(post_save, sender=Player)
-def create_default_sport_profile(sender, instance, created, **kwargs):
-    """
-    Automatically create a default 'Cricket' sport profile and its stats
-    whenever a new Player is created.
-    """
-    if not created:
-        return
-
-    with transaction.atomic():
-        # Check if player already has a cricket profile
-        if not PlayerSportProfile.objects.filter(player=instance, sport_name="Cricket").exists():
-            profile = PlayerSportProfile.objects.create(
-                player=instance,
-                sport_name="Cricket",
-                is_active=True,
-                career_score=0.0,
-            )
-
-            # Initialize empty cricket stats for this profile
-            CricketStats.objects.create(profile=profile)
+# REMOVED: Auto-creation of Cricket profile
+# The serializer now handles sport profile creation based on user selection
+# This signal was causing all players to get Cricket regardless of their choice
