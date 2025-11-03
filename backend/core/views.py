@@ -1,3 +1,283 @@
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+import csv
+from io import StringIO
+
+from .models import PromotionRequest, Player, Sport, CoachingSession, PlayerSportProfile, SessionAttendance, CoachPlayerLinkRequest, Leaderboard, Notification
+from .serializers import (
+    PromotionRequestCreateSerializer,
+    PromotionRequestSerializer,
+    CoachingSessionCreateSerializer,
+    CoachInviteSerializer,
+    PlayerRequestCoachSerializer,
+    CoachPlayerLinkRequestSerializer,
+    LeaderboardSerializer,
+    NotificationSerializer,
+)
+from .permissions import IsAuthenticatedAndPlayer, IsAuthenticatedAndManagerOrAdmin, IsAuthenticatedAndCoach
+from .promotion_services import (
+    request_promotion,
+    approve_promotion,
+    reject_promotion,
+    PromotionError,
+    coach_invite_player,
+    player_request_coach,
+    accept_link_request,
+    reject_link_request,
+    LinkError,
+)
+
+
+class PromotionRequestViewSet(viewsets.GenericViewSet):
+    queryset = PromotionRequest.objects.select_related("user", "player", "sport", "decided_by")
+    serializer_class = PromotionRequestSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in {"create"}:
+            return [IsAuthenticatedAndPlayer()]
+        if self.action in {"approve", "reject", "list"}:
+            return [IsAuthenticatedAndManagerOrAdmin()]
+        return super().get_permissions()
+
+    def list(self, request):
+        qs = self.get_queryset().order_by("-requested_at")
+        serializer = PromotionRequestSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    def create(self, request):
+        serializer = PromotionRequestCreateSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        sport = serializer.validated_data["sport"]
+        player_obj = serializer.validated_data["player_obj"]
+        remarks = serializer.validated_data.get("remarks", "")
+        pr = request_promotion(user=request.user, sport=sport, player=player_obj, remarks=remarks)
+        return Response(PromotionRequestSerializer(pr).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve(self, request, pk=None):
+        try:
+            pr = self.get_queryset().get(pk=pk)
+            coach = approve_promotion(pr, decided_by=request.user)
+        except PromotionRequest.DoesNotExist:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        except PromotionError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Approved", "coach_id": coach.coach_id})
+
+    @action(detail=True, methods=["post"], url_path="reject")
+    def reject(self, request, pk=None):
+        remarks = request.data.get("remarks")
+        try:
+            pr = self.get_queryset().get(pk=pk)
+            reject_promotion(pr, decided_by=request.user, remarks=remarks)
+        except PromotionRequest.DoesNotExist:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        except PromotionError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Rejected"})
+
+
+class CoachingSessionViewSet(viewsets.GenericViewSet):
+    queryset = CoachingSession.objects.select_related("coach", "team", "sport")
+    serializer_class = CoachingSessionCreateSerializer
+    permission_classes = [IsAuthenticatedAndCoach]
+
+    def create(self, request):
+        serializer = CoachingSessionCreateSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        coach = request.user.coach
+        session = CoachingSession.objects.create(coach=coach, **serializer.validated_data)
+        return Response({"id": session.id}, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get"], url_path="csv-template")
+    def csv_template(self, request, pk=None):
+        try:
+            session = self.get_queryset().get(pk=pk)
+        except CoachingSession.DoesNotExist:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        if session.coach_id != request.user.coach.id:
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        # Players under this coach for this sport and currently active
+        profiles = PlayerSportProfile.objects.select_related("player").filter(
+            coach=request.user.coach,
+            sport=session.sport,
+            is_active=True,
+            player__is_active=True,
+        )
+
+        output = StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["player_id", "attended", "score"])  # attended: 0/1, score: 1-10
+        for p in profiles:
+            writer.writerow([p.player.player_id, 0, 0])
+        data = output.getvalue()
+        return Response(data, headers={"Content-Type": "text/csv"})
+
+    @action(detail=True, methods=["post"], url_path="upload-csv")
+    def upload_csv(self, request, pk=None):
+        try:
+            session = self.get_queryset().get(pk=pk)
+        except CoachingSession.DoesNotExist:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        if session.coach_id != request.user.coach.id:
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+        file = request.FILES.get("file")
+        if not file:
+            return Response({"detail": "CSV file required (field name: file)"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            content = file.read().decode("utf-8")
+        except Exception:
+            return Response({"detail": "Invalid file encoding"}, status=status.HTTP_400_BAD_REQUEST)
+
+        reader = csv.DictReader(StringIO(content))
+        required_cols = {"player_id", "attended", "score"}
+        if set(reader.fieldnames or []) != required_cols:
+            return Response({"detail": f"CSV must have columns: {', '.join(sorted(required_cols))}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Allowed players: under this coach for this sport and active
+        allowed_player_ids = set(
+            PlayerSportProfile.objects.select_related("player").filter(
+                coach=request.user.coach,
+                sport=session.sport,
+                is_active=True,
+                player__is_active=True,
+            ).values_list("player__player_id", flat=True)
+        )
+
+        updated = 0
+        errors = []
+        for idx, row in enumerate(reader, start=2):  # header is line 1
+            pid = (row.get("player_id") or "").strip()
+            attended_val = (row.get("attended") or "").strip()
+            score_val = (row.get("score") or "").strip()
+
+            if pid not in allowed_player_ids:
+                errors.append({"row": idx, "player_id": pid, "error": "Player not under this coach/sport or inactive"})
+                continue
+            try:
+                attended = int(attended_val)
+                score = int(score_val)
+            except ValueError:
+                errors.append({"row": idx, "player_id": pid, "error": "attended and score must be integers"})
+                continue
+            if attended not in (0, 1) or not (1 <= score <= 10):
+                errors.append({"row": idx, "player_id": pid, "error": "attended must be 0/1; score 1-10"})
+                continue
+
+            try:
+                player = Player.objects.get(player_id=pid)
+            except Player.DoesNotExist:
+                errors.append({"row": idx, "player_id": pid, "error": "Player not found"})
+                continue
+
+            sa, _ = SessionAttendance.objects.get_or_create(session=session, player=player)
+            sa.attended = bool(attended)
+            sa.rating = score if sa.attended else 0
+            sa.save()
+            updated += 1
+
+            # Update DailyPerformanceScore for the calendar day
+            from .models import DailyPerformanceScore
+            day = session.session_date.date()
+            dps, _ = DailyPerformanceScore.objects.get_or_create(player=player, date=day)
+            # recompute as average of all ratings for this player on this day (across sessions)
+            from django.db.models import Avg
+            avg_score = (
+                SessionAttendance.objects.filter(
+                    player=player,
+                    session__session_date__date=day,
+                    attended=True,
+                ).aggregate(Avg("rating"))["rating__avg"] or 0.0
+            )
+            dps.score = float(avg_score)
+            dps.save(update_fields=["score"])
+
+        status_code = status.HTTP_200_OK if not errors else status.HTTP_207_MULTI_STATUS
+        return Response({"updated": updated, "errors": errors}, status=status_code)
+
+
+class CoachPlayerLinkViewSet(viewsets.GenericViewSet):
+    queryset = CoachPlayerLinkRequest.objects.select_related("coach__user", "player__user", "sport")
+    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in {"invite"}:
+            return [IsAuthenticatedAndCoach()]
+        if self.action in {"request_coach"}:
+            return [IsAuthenticatedAndPlayer()]
+        return super().get_permissions()
+
+    @action(detail=False, methods=["post"], url_path="invite")
+    def invite(self, request):
+        serializer = CoachInviteSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        link = coach_invite_player(coach=serializer.validated_data["coach"], player=serializer.validated_data["player"], sport=serializer.validated_data["sport"])
+        return Response(CoachPlayerLinkRequestSerializer(link).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="request")
+    def request_coach(self, request):
+        serializer = PlayerRequestCoachSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        link = player_request_coach(player=serializer.validated_data["player"], coach=serializer.validated_data["coach"], sport=serializer.validated_data["sport"])
+        return Response(CoachPlayerLinkRequestSerializer(link).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="accept")
+    def accept(self, request, pk=None):
+        try:
+            link = self.get_queryset().get(pk=pk)
+            psp = accept_link_request(link, acting_user=request.user)
+        except CoachPlayerLinkRequest.DoesNotExist:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        except LinkError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Accepted", "player_id": psp.player.player_id})
+
+    @action(detail=True, methods=["post"], url_path="reject")
+    def reject(self, request, pk=None):
+        try:
+            link = self.get_queryset().get(pk=pk)
+            reject_link_request(link, acting_user=request.user)
+        except CoachPlayerLinkRequest.DoesNotExist:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        except LinkError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Rejected"})
+
+
+class LeaderboardViewSet(viewsets.GenericViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        # filter to active players only
+        qs = Leaderboard.objects.select_related("player__user").filter(player__is_active=True).order_by("-score")
+        return Response(LeaderboardSerializer(qs, many=True).data)
+
+
+class NotificationViewSet(viewsets.GenericViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        qs = Notification.objects.filter(user=request.user).order_by("-created_at")
+        return Response(NotificationSerializer(qs, many=True).data)
+
+    @action(detail=True, methods=["post"], url_path="mark-read")
+    def mark_read(self, request, pk=None):
+        try:
+            n = Notification.objects.get(pk=pk, user=request.user)
+        except Notification.DoesNotExist:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        if n.read_at is None:
+            from django.utils import timezone as _tz
+            n.read_at = _tz.now()
+            n.save(update_fields=["read_at"])
+        return Response({"detail": "OK"})
+
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import (

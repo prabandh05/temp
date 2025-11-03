@@ -1,5 +1,6 @@
 from django.urls import path, include
 from rest_framework import routers
+from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .views import (
     TeamViewSet, PlayerViewSet, MatchViewSet,
@@ -7,7 +8,10 @@ from .views import (
     predict_player_start, player_insight, register_user,
     player_dashboard, coach_dashboard
 )
-from .views import CustomObtainAuthToken, RoleAwareProfileView, player_profile, coach_profile
+from .views import (
+    CustomObtainAuthToken, RoleAwareProfileView, player_profile, coach_profile,
+    PromotionRequestViewSet, CoachingSessionViewSet, CoachPlayerLinkViewSet, NotificationViewSet
+)
 
 
 router = routers.DefaultRouter()
@@ -16,6 +20,10 @@ router.register(r'players', PlayerViewSet)
 router.register(r'matches', MatchViewSet)
 router.register(r'attendance', AttendanceViewSet)
 router.register(r'leaderboard', LeaderboardViewSet)
+router.register(r"promotion", PromotionRequestViewSet, basename="promotion")
+router.register(r"sessions", CoachingSessionViewSet, basename="sessions")
+router.register(r"coach-player-links", CoachPlayerLinkViewSet, basename="coach-player-links")
+router.register(r"notifications", NotificationViewSet, basename="notifications")
 
 urlpatterns = [
     
