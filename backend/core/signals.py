@@ -5,7 +5,7 @@ from django.db import transaction
 from django.db.models import Max
 import datetime
 
-from .models import User, Player, Coach, PlayerSportProfile, CricketStats
+from .models import User, Player, Coach, Manager, PlayerSportProfile, CricketStats
 
 
 def _next_player_id():
@@ -63,9 +63,24 @@ def create_or_update_coach(sender, instance, created, **kwargs):
             if not hasattr(instance, "coach"):
                 Coach.objects.create(user=instance)
                 print(f"✅ Auto-created coach for {instance.username}")
-                
-                
-                
+
+
+@receiver(post_save, sender=User)
+def create_or_update_manager(sender, instance, created, **kwargs):
+    if instance.role != User.Roles.MANAGER:
+        return
+
+    # If newly created or role changed to manager
+    role_changed = hasattr(instance, "_old_role") and instance._old_role != User.Roles.MANAGER
+
+    if created or role_changed:
+        with transaction.atomic():
+            # Create only if not already existing
+            if not hasattr(instance, "manager"):
+                Manager.objects.create(user=instance)
+                print(f"✅ Auto-created manager for {instance.username}")
+
+
 @receiver(pre_save, sender=User)
 def store_old_role(sender, instance, **kwargs):
     if not instance.pk:

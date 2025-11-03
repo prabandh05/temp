@@ -12,6 +12,8 @@ export default function PlayerDashboard() {
   // UI state for leaderboard
   const [activeSportIndex, setActiveSportIndex] = useState(0);
   const [metric, setMetric] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState("");
 
   useEffect(() => {
     let mounted = true;
@@ -315,6 +317,49 @@ export default function PlayerDashboard() {
                 <div className="text-sm text-gray-500">No achievements yet.</div>
               )}
             </div>
+          </div>
+
+          {/* AI Actions */}
+          <div className="bg-white border rounded-xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-semibold">AI Insights</div>
+              <div className="text-xs text-gray-500">Experimental</div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                disabled={aiLoading}
+                onClick={async () => {
+                  try {
+                    setAiLoading(true); setAiResult("");
+                    const res = await api.post('/api/predict-player/', { /* put minimal features here if needed */ });
+                    setAiResult(JSON.stringify(res.data));
+                  } catch (e) {
+                    setAiResult(e?.response?.data?.error || 'Prediction failed');
+                  } finally {
+                    setAiLoading(false);
+                  }
+                }}
+                className="px-3 py-2 rounded border"
+              >Predict Start</button>
+              <button
+                disabled={aiLoading}
+                onClick={async () => {
+                  try {
+                    setAiLoading(true); setAiResult("");
+                    const res = await api.post('/api/player-insight/', { player_id: data?.player?.id, context: `sport=${activeSportName}` });
+                    setAiResult(res.data?.insight || '');
+                  } catch (e) {
+                    setAiResult(e?.response?.data?.error || 'Insight failed');
+                  } finally {
+                    setAiLoading(false);
+                  }
+                }}
+                className="px-3 py-2 rounded border"
+              >Get Insight</button>
+            </div>
+            {!!aiResult && (
+              <div className="mt-3 text-sm text-gray-700 whitespace-pre-wrap">{aiResult}</div>
+            )}
           </div>
         )}
       </div>

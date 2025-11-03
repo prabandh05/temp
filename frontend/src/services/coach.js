@@ -66,9 +66,88 @@ export const updateCoachProfile = (profileData) => {
 };
 
 /**
- * Sends an invitation to a player to be coached.
- * @param {string} playerEmail - The email of the player to invite.
+ * Sends an invitation to a player (by player_id) for a specific sport (sport_id).
+ * Backend requires: { player_id, sport_id }
  */
-export const invitePlayer = (playerEmail) => {
-  return api.post('/api/coach-player-links/invite/', { player_email: playerEmail });
+export const invitePlayer = ({ playerId, sportId }) => {
+  return api.post('/api/coach-player-links/invite/', { player_id: playerId, sport_id: sportId });
+};
+
+/**
+ * Create a team proposal with selected player IDs under a manager for a sport.
+ * Body: { manager_id, sport_id, team_name, player_ids: number[] }
+ */
+export const createTeamProposal = ({ managerId, sportId, teamName, playerIds }) => {
+  return api.post('/api/team-proposals/', {
+    manager_id: managerId,
+    sport_id: sportId,
+    team_name: teamName,
+    player_ids: playerIds,
+  });
+};
+
+/**
+ * List team proposals (manager sees own; admin sees all; coach can fetch but will be unauthorized for list here).
+ */
+export const listTeamProposals = () => {
+  return api.get('/api/team-proposals/');
+};
+
+/** Approve a team proposal (manager). */
+export const approveTeamProposal = (proposalId) => {
+  return api.post(`/api/team-proposals/${proposalId}/approve/`);
+};
+
+/** Reject a team proposal (manager). */
+export const rejectTeamProposal = (proposalId, remarks) => {
+  return api.post(`/api/team-proposals/${proposalId}/reject/`, { remarks });
+};
+
+/** List all teams (manager can filter client-side). */
+export const listTeams = () => {
+  return api.get('/api/teams/');
+};
+
+/** Create a tournament (manager). Body: { name, sport, start_date?, end_date?, location?, description? } */
+export const createTournament = (payload) => {
+  return api.post('/api/tournaments/', payload);
+};
+
+/** List tournaments (manager sees own). */
+export const listTournaments = () => {
+  return api.get('/api/tournaments/');
+};
+
+/** Add a team to a tournament. */
+export const addTeamToTournament = (tournamentId, teamId) => {
+  return api.post(`/api/tournaments/${tournamentId}/add-team/`, { team_id: teamId });
+};
+
+/** Create team assignment request (manager) */
+export const createTeamAssignment = ({ coachId, teamId }) => {
+  return api.post('/api/team-assignments/', { coach_id: coachId, team_id: teamId });
+};
+
+/** Coach accepts or rejects an assignment */
+export const acceptTeamAssignment = (assignmentId) => {
+  return api.post(`/api/team-assignments/${assignmentId}/accept/`);
+};
+export const rejectTeamAssignment = (assignmentId, remarks) => {
+  return api.post(`/api/team-assignments/${assignmentId}/reject/`, { remarks });
+};
+
+/** List notifications for current user */
+export const listNotifications = () => {
+  return api.get('/api/notifications/');
+};
+
+/** Promotion requests (manager/admin) */
+export const listPromotionRequests = () => {
+  return api.get('/api/promotion/');
+};
+export const approvePromotionRequest = (id) => {
+  return api.post(`/api/promotion/${id}/approve/`);
+};
+export const rejectPromotionRequest = (id, remarks) => {
+  return api.post(`/api/promotion/${id}/reject/`, { remarks });
 };

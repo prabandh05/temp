@@ -6,11 +6,11 @@ from .views import (
     TeamViewSet, PlayerViewSet, MatchViewSet,
     AttendanceViewSet, LeaderboardViewSet,
     predict_player_start, player_insight, register_user,
-    player_dashboard, coach_dashboard
-)
-from .views import (
+    player_dashboard, coach_dashboard,
     CustomObtainAuthToken, RoleAwareProfileView, player_profile, coach_profile,
-    PromotionRequestViewSet, CoachingSessionViewSet, CoachPlayerLinkViewSet, NotificationViewSet
+    PromotionRequestViewSet, CoachingSessionViewSet, CoachPlayerLinkViewSet, NotificationViewSet,
+    SportViewSet, TeamProposalViewSet, TeamAssignmentRequestViewSet, TournamentViewSet,
+    ManagerSportAssignmentViewSet,
 )
 
 
@@ -24,6 +24,11 @@ router.register(r"promotion", PromotionRequestViewSet, basename="promotion")
 router.register(r"sessions", CoachingSessionViewSet, basename="sessions")
 router.register(r"coach-player-links", CoachPlayerLinkViewSet, basename="coach-player-links")
 router.register(r"notifications", NotificationViewSet, basename="notifications")
+router.register(r"sports", SportViewSet, basename="sports")
+router.register(r"team-proposals", TeamProposalViewSet, basename="team-proposals")
+router.register(r"team-assignments", TeamAssignmentRequestViewSet, basename="team-assignments")
+router.register(r"tournaments", TournamentViewSet, basename="tournaments")
+router.register(r"manager-sport-assignments", ManagerSportAssignmentViewSet, basename="manager-sport-assignments")
 
 urlpatterns = [
     

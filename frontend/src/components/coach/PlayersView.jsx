@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { UserPlus, Mail, Send, X, CheckCircle, AlertCircle } from 'lucide-react';
-import { invitePlayer } from '../../services/coach';
+import React, { useEffect, useState } from 'react';
+import { UserPlus, Send, X, CheckCircle, AlertCircle } from 'lucide-react';
+import { invitePlayer, getSports } from '../../services/coach';
 
 const Modal = ({ isOpen, onClose, children, title }) => {
   if (!isOpen) return null;
@@ -21,28 +21,39 @@ const Modal = ({ isOpen, onClose, children, title }) => {
 
 export default function PlayersView({ players = [], onPlayersUpdate }) {
   const [isInviteModalOpen, setInviteModalOpen] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState('');
+  const [sports, setSports] = useState([]);
+  const [selectedSportId, setSelectedSportId] = useState('');
+  const [playerId, setPlayerId] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [inviteResult, setInviteResult] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await getSports();
+        setSports(res.data || []);
+      } catch {}
+    })();
+  }, []);
 
   const handleInvite = async (e) => {
     e.preventDefault();
     setIsSending(true);
     setInviteResult(null);
     try {
-      const res = await invitePlayer(inviteEmail);
+      const res = await invitePlayer({ playerId, sportId: Number(selectedSportId) });
       setInviteResult({ success: true, message: res.data.detail || 'Invitation sent successfully!' });
       onPlayersUpdate(); // Refresh player list
     } catch (err) {
       setInviteResult({ success: false, message: err.response?.data?.detail || 'Failed to send invitation.' });
     } finally {
       setIsSending(false);
-      setInviteEmail('');
+      setPlayerId('');
     }
   };
 
   const openInviteModal = () => {
-    setInviteEmail('');
+    setPlayerId('');
     setInviteResult(null);
     setInviteModalOpen(true);
   };
@@ -98,22 +109,35 @@ export default function PlayersView({ players = [], onPlayersUpdate }) {
         </div>
       </div>
 
-      <Modal isOpen={isInviteModalOpen} onClose={() => setInviteModalOpen(false)} title="Invite a New Player">
+      <Modal isOpen={isInviteModalOpen} onClose={() => setInviteModalOpen(false)} title="Invite a New Player (by Player ID)">
         <form onSubmit={handleInvite} className="space-y-4">
-          <p className="text-sm text-[#A3A3A3]">Enter the email address of the player you wish to invite. They will receive a notification to accept your coaching request.</p>
-          <div>
-            <label htmlFor="email" className="sr-only">Player's Email</label>
-            <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A3A3A3]" size={20} />
-              <input
-                type="email"
-                name="email"
-                id="email"
-                value={inviteEmail}
-                onChange={(e) => setInviteEmail(e.target.value)}
-                placeholder="player@example.com"
+          <p className="text-sm text-[#A3A3A3]">Enter the player's ID and select the sport to send a coaching invitation.</p>
+          <div className="grid grid-cols-1 gap-3">
+            <div>
+              <label htmlFor="sport" className="block text-xs text-[#A3A3A3] mb-1">Sport</label>
+              <select
+                id="sport"
+                value={selectedSportId}
+                onChange={(e) => setSelectedSportId(e.target.value)}
                 required
-                className="w-full p-2 pl-10 bg-[#171717] border border-[#2F2F2F] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E7FFF]"
+                className="w-full p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E7FFF]"
+              >
+                <option value="" disabled>Select sport</option>
+                {sports.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="playerId" className="block text-xs text-[#A3A3A3] mb-1">Player ID</label>
+              <input
+                type="text"
+                id="playerId"
+                value={playerId}
+                onChange={(e) => setPlayerId(e.target.value)}
+                placeholder="e.g., P2500001"
+                required
+                className="w-full p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E7FFF]"
               />
             </div>
           </div>

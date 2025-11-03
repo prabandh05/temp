@@ -121,7 +121,6 @@ class SportStatsBase(models.Model):
 
 
 
-
 #ALL Sport Stats Models
 
 #cricket stats model
@@ -413,12 +412,156 @@ class CoachPlayerLinkRequest(models.Model):
 
 
 # -----------------------------
-# Notifications (stub)
+# Manager Model
+# -----------------------------
+class Manager(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="manager")
+    manager_id = models.CharField(max_length=10, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def __str__(self):
+        return f"{getattr(self.user, 'username', 'Manager')}"
+
+    def save(self, *args, **kwargs):
+        if not self.manager_id:
+            # Generate manager ID: MYYNNNNN
+            current_year = str(datetime.date.today().year)[-2:]
+            count = Manager.objects.count() + 1
+            self.manager_id = f"M{current_year}{count:05d}"
+        super().save(*args, **kwargs)
+
+
+# -----------------------------
+# Manager-Sport relationship (one manager per sport)
+# -----------------------------
+class ManagerSport(models.Model):
+    manager = models.ForeignKey(Manager, on_delete=models.CASCADE, related_name="sports")
+    sport = models.ForeignKey(Sport, on_delete=models.CASCADE, related_name="managers")
+    assigned_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="manager_assignments")
+    assigned_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        unique_together = ("manager", "sport")
+
+    def __str__(self):
+        return f"{self.manager.user.username} - {self.sport.name}"
+
+
+# -----------------------------
+# Team Proposal (coach proposes team from students)
+# -----------------------------
+class TeamProposal(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
+    coach = models.ForeignKey(Coach, on_delete=models.CASCADE, related_name="team_proposals")
+    manager = models.ForeignKey(User, on_delete=models.CASCADE, related_name="team_proposals", help_text="Manager who will review")
+    sport = models.ForeignKey(Sport, on_delete=models.PROTECT, related_name="team_proposals")
+    team_name = models.CharField(max_length=100)
+    proposed_players = models.ManyToManyField(Player, related_name="team_proposals")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(default=timezone.now)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    remarks = models.TextField(blank=True, null=True)
+    created_team = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, blank=True, related_name="from_proposal")
+
+    def __str__(self):
+        return f"Team Proposal: {self.team_name} by {getattr(self.coach.user, 'username', 'Coach')} [{self.get_status_display()}]"
+
+
+# -----------------------------
+# Team Assignment Request (manager assigns coach to team)
+# -----------------------------
+class TeamAssignmentRequest(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        ACCEPTED = "accepted", "Accepted"
+        REJECTED = "rejected", "Rejected"
+
+    manager = models.ForeignKey(User, on_delete=models.CASCADE, related_name="team_assignments")
+    coach = models.ForeignKey(Coach, on_delete=models.CASCADE, related_name="team_assignments")
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="assignment_requests")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(default=timezone.now)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    remarks = models.TextField(blank=True, null=True)
+
+    class Meta:
+        unique_together = ("coach", "team", "status")
+
+    def __str__(self):
+        return f"Assignment: {self.team.name} → {getattr(self.coach.user, 'username', 'Coach')} [{self.get_status_display()}]"
+
+
+# -----------------------------
+# Tournament Models (base + flexible)
+# -----------------------------
+class Tournament(models.Model):
+    class Status(models.TextChoices):
+        UPCOMING = "upcoming", "Upcoming"
+        ONGOING = "ongoing", "Ongoing"
+        COMPLETED = "completed", "Completed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    name = models.CharField(max_length=200)
+    sport = models.ForeignKey(Sport, on_delete=models.PROTECT, related_name="tournaments")
+    manager = models.ForeignKey(User, on_delete=models.PROTECT, related_name="managed_tournaments", help_text="Manager who owns/manages this tournament")
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="created_tournaments")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.UPCOMING)
+    start_date = models.DateTimeField(null=True, blank=True)
+    end_date = models.DateTimeField(null=True, blank=True)
+    location = models.CharField(max_length=200, blank=True, null=True)
+    description = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def __str__(self):
+        return f"{self.name} ({self.sport.name})"
+
+
+class TournamentTeam(models.Model):
+    tournament = models.ForeignKey(Tournament, on_delete=models.CASCADE, related_name="teams")
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="tournament_participations")
+    registered_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        unique_together = ("tournament", "team")
+
+    def __str__(self):
+        return f"{self.team.name} in {self.tournament.name}"
+
+
+class TournamentMatch(models.Model):
+    tournament = models.ForeignKey(Tournament, on_delete=models.CASCADE, related_name="matches")
+    team1 = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="tournament_matches_as_team1")
+    team2 = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="tournament_matches_as_team2")
+    match_number = models.PositiveIntegerField(default=1, help_text="Match number in tournament")
+    date = models.DateTimeField(default=timezone.now)
+    score_team1 = models.IntegerField(default=0)
+    score_team2 = models.IntegerField(default=0)
+    location = models.CharField(max_length=200, blank=True, null=True)
+    is_completed = models.BooleanField(default=False)
+    man_of_the_match = models.ForeignKey(Player, on_delete=models.SET_NULL, null=True, blank=True, related_name="mom_awards")
+    notes = models.TextField(blank=True, null=True)
+
+    class Meta:
+        unique_together = ("tournament", "match_number")
+
+    def __str__(self):
+        return f"{self.tournament.name}: {self.team1} vs {self.team2} (#{self.match_number})"
+
+
+# -----------------------------
+# Notifications
 # -----------------------------
 class Notification(models.Model):
     class Type(models.TextChoices):
         PROMOTION = "promotion", "Promotion"
         LINK = "link", "Coach/Player Link"
+        TEAM_PROPOSAL = "team_proposal", "Team Proposal"
+        TEAM_ASSIGNMENT = "team_assignment", "Team Assignment"
+        TOURNAMENT = "tournament", "Tournament"
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
     type = models.CharField(max_length=20, choices=Type.choices)
@@ -426,6 +569,9 @@ class Notification(models.Model):
     message = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(default=timezone.now)
     read_at = models.DateTimeField(null=True, blank=True)
+    # Optional: link to related object
+    related_object_id = models.IntegerField(null=True, blank=True)
+    related_object_type = models.CharField(max_length=50, blank=True, null=True)
 
     class Meta:
         ordering = ["-created_at"]
