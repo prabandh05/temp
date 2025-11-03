@@ -50,6 +50,8 @@ class CustomObtainAuthToken(ObtainAuthToken):
             'user_id': user.id,
             'username': user.username,
             'email': user.email,
+            'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
             'role': user.role,   # from our new column
         })
         
