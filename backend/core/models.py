@@ -60,46 +60,119 @@ class Player(models.Model):
     def __str__(self):
         return f"{self.player_id} - {self.user.username}"
 
-#Sport Model
-class PlayerSport(models.Model):
-    SPORT_CHOICES = [
-        ("cricket", "Cricket"),
-        ("football", "Football"),
-        ("basketball", "Basketball"),
+# -----------------------------
+# Sport Model (Master)
+# -----------------------------
+class Sport(models.Model):
+    SPORT_TYPES = [
+        ("team", "Team Sport"),
+        ("individual", "Individual Sport"),
     ]
-    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="sports")
-    sport = models.CharField(max_length=50, choices=SPORT_CHOICES)
-    role_in_sport = models.CharField(max_length=50, blank=True, null=True)  # batsman, bowler, etc.
-    started_on = models.DateField(default=timezone.now)
+
+    name = models.CharField(max_length=50, unique=True)
+    sport_type = models.CharField(max_length=20, choices=SPORT_TYPES, default="team")
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return self.name
+# -----------------------------
+
+#Sport Profile Model
+class PlayerSportProfile(models.Model):
+    player = models.ForeignKey("Player", on_delete=models.CASCADE, related_name="sport_profiles")
+    sport = models.ForeignKey("Sport", on_delete=models.CASCADE, related_name="profiles", null=True, blank=True)
+    team = models.ForeignKey("Team", on_delete=models.SET_NULL, null=True, blank=True, related_name="players")
+    coach = models.ForeignKey("Coach", on_delete=models.SET_NULL, null=True, blank=True, related_name="players")
+    joined_date = models.DateField(default=timezone.now)
+    is_active = models.BooleanField(default=True)
+    career_score = models.FloatField(default=0.0)
 
     class Meta:
-        unique_together = ('player', 'sport')
+        unique_together = ("player", "sport")
 
     def __str__(self):
-        return f"{self.player.player_id} - {self.sport}"
+        return f"{self.player.user.username} - {self.sport.name if self.sport else 'Unknown'}"
 
 
-#_____________Cricket Specific Stats Model_____________
-class CricketStats(models.Model):
-    player_sport = models.OneToOneField(PlayerSport, on_delete=models.CASCADE, related_name='cricket_stats')
-    matches = models.PositiveIntegerField(default=0)
+# -----------------------------
+
+#Base Stats Model
+# -----------------------------
+# Base Stats Model
+# -----------------------------
+class SportStatsBase(models.Model):
+    matches_played = models.PositiveIntegerField(default=0)
+    last_updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+
+
+
+
+
+#ALL Sport Stats Models
+
+#cricket stats model
+class CricketStats(SportStatsBase):
+    profile = models.ForeignKey(PlayerSportProfile, on_delete=models.CASCADE, related_name="cricket_stats")
     runs = models.PositiveIntegerField(default=0)
-    balls_faced = models.PositiveIntegerField(default=0)
     wickets = models.PositiveIntegerField(default=0)
-    overs_bowled = models.FloatField(default=0)
-    highest_score = models.PositiveIntegerField(default=0)
-    average = models.FloatField(default=0)
-    strike_rate = models.FloatField(default=0)
-    catches = models.PositiveIntegerField(default=0)
-    stumpings = models.PositiveIntegerField(default=0)
+    balls_faced = models.PositiveIntegerField(default=0)
+    balls_bowled = models.PositiveIntegerField(default=0)
+    average = models.FloatField(default=0.0)
+    strike_rate = models.FloatField(default=0.0)
+
+    def save(self, *args, **kwargs):
+        if self.balls_faced > 0:
+            self.strike_rate = (self.runs / self.balls_faced) * 100
+        if self.matches_played > 0:
+            self.average = self.runs / self.matches_played
+        super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.player_sport.player.user.username} ({self.player_sport.sport})"
+        return f"{self.profile.player.user.username} - Cricket Stats"
 
-#_____________________Football Specific Stats Model_____________
+# -----------------------------
+# Football Stats
+# -----------------------------
+class FootballStats(SportStatsBase):
+    profile = models.ForeignKey(PlayerSportProfile, on_delete=models.CASCADE, related_name="football_stats")
+    goals = models.PositiveIntegerField(default=0)
+    assists = models.PositiveIntegerField(default=0)
+    tackles = models.PositiveIntegerField(default=0)
 
-#later add more sports similarly
+    def __str__(self):
+        return f"{self.profile.player.user.username} - Football Stats"
 
+
+
+# -----------------------------
+# Basketball Stats
+# -----------------------------
+class BasketballStats(SportStatsBase):
+    profile = models.ForeignKey(PlayerSportProfile, on_delete=models.CASCADE, related_name="basketball_stats")
+    points = models.PositiveIntegerField(default=0)
+    rebounds = models.PositiveIntegerField(default=0)
+    assists = models.PositiveIntegerField(default=0)
+
+    def __str__(self):
+        return f"{self.profile.player.user.username} - Basketball Stats"
+
+
+# -----------------------------
+# Running Stats
+# -----------------------------
+class RunningStats(SportStatsBase):
+    profile = models.ForeignKey(PlayerSportProfile, on_delete=models.CASCADE, related_name="running_stats")
+    total_distance_km = models.FloatField(default=0.0)
+    best_time_seconds = models.FloatField(default=0.0)
+    events_participated = models.PositiveIntegerField(default=0)
+
+    def __str__(self):
+        return f"{self.profile.player.user.username} - Running Stats"
+
+# -----------------------------
 
 
 

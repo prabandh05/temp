@@ -5,7 +5,8 @@ from django.db import transaction
 from django.db.models import Max
 import datetime
 
-from .models import User, Player
+from .models import User, Player ,PlayerSportProfile, CricketStats
+
 
 def _next_player_id():
     """Generate next player id like P25xxxxx."""
@@ -58,3 +59,31 @@ def store_old_role(sender, instance, **kwargs):
             instance._old_role = User.objects.get(pk=instance.pk).role
         except User.DoesNotExist:
             instance._old_role = None
+
+
+#-----------------------------
+# Sport Profile Signals
+#-----------------------------
+
+#cricket profile creation
+@receiver(post_save, sender=Player)
+def create_default_sport_profile(sender, instance, created, **kwargs):
+    """
+    Automatically create a default 'Cricket' sport profile and its stats
+    whenever a new Player is created.
+    """
+    if not created:
+        return
+
+    with transaction.atomic():
+        # Check if player already has a cricket profile
+        if not PlayerSportProfile.objects.filter(player=instance, sport_name="Cricket").exists():
+            profile = PlayerSportProfile.objects.create(
+                player=instance,
+                sport_name="Cricket",
+                is_active=True,
+                career_score=0.0,
+            )
+
+            # Initialize empty cricket stats for this profile
+            CricketStats.objects.create(profile=profile)
