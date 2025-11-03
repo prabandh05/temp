@@ -1,41 +1,51 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Users, Shield, UserCircle, LogOut, Loader2, FilePlus2, Bell } from 'lucide-react';
-import { getDashboardData, getSports, createTeamProposal, listTeamProposals, listNotifications, acceptTeamAssignment, rejectTeamAssignment } from '../services/coach';
+import { PlusCircle, Users, ClipboardList, Download, Upload, FileText, AlertCircle, CheckCircle, X } from 'lucide-react';
+import { getDashboardData, getSports, createSession, getSessionCsvTemplate, uploadSessionCsv } from '../services/coach';
 
-// Import new view components
-import DashboardOverview from '../components/coach/DashboardOverview';
-import TeamsView from '../components/coach/TeamsView';
-import PlayersView from '../components/coach/PlayersView';
-import ProfileView from '../components/coach/ProfileView';
+// Modal Component
+const Modal = ({ isOpen, onClose, children, title }) => {
+  if (!isOpen) return null;
 
-const NAV_ITEMS = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'teams', label: 'My Teams', icon: Shield },
-  { id: 'sessions', label: 'Sessions', icon: Shield },
-  { id: 'players', label: 'My Players', icon: Users },
-  { id: 'proposals', label: 'Team Proposals', icon: FilePlus2 },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'profile', label: 'Profile', icon: UserCircle },
-];
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-70 z-50 flex justify-center items-center p-4" onClick={onClose}>
+      <div className="bg-[#262626] rounded-2xl shadow-xl w-full max-w-md border border-[#2F2F2F] p-6 animate-fade-in-up" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-xl font-bold text-white">{title}</h3>
+          <button onClick={onClose} className="text-[#A3A3A3] hover:text-white transition-colors">
+            <X size={24} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+};
 
+// Main Dashboard Component
 export default function CoachDashboard() {
-  const [activeTab, setActiveTab] = useState('dashboard');
   const [dashboardData, setDashboardData] = useState({ teams: [], players: [] });
+  const [sessions, setSessions] = useState([]);
   const [sports, setSports] = useState([]);
-  const [proposals, setProposals] = useState([]);
-  const [proposalForm, setProposalForm] = useState({ teamName: '', sportId: '', playerIds: '' });
-  const [notifications, setNotifications] = useState([]);
-  const [assignmentId, setAssignmentId] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const navigate = useNavigate();
+
+  const [isCreateModalOpen, setCreateModalOpen] = useState(false);
+  const [isUploadModalOpen, setUploadModalOpen] = useState(false);
+  const [selectedSession, setSelectedSession] = useState(null);
+  
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploadResult, setUploadResult] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
       setIsLoading(true);
-      const dashRes = await getDashboardData();
+      const [dashRes, sportsRes] = await Promise.all([
+        getDashboardData(),
+        getSports().catch(() => ({ data: [] })) // Gracefully fail if sports endpoint doesn't exist
+      ]);
       setDashboardData(dashRes.data);
+      setSports(sportsRes.data);
       setError('');
     } catch (err) {
       setError('Failed to load dashboard data. Please try again later.');
@@ -47,359 +57,214 @@ export default function CoachDashboard() {
 
   useEffect(() => {
     fetchData();
-    (async () => {
-      try {
-        const s = await getSports();
-        setSports(s.data || []);
-      } catch {}
-      try {
-        const p = await listTeamProposals();
-        setProposals(p.data || []);
-      } catch {}
-      try {
-        const n = await listNotifications();
-        setNotifications(n.data || []);
-      } catch {}
-    })();
   }, [fetchData]);
 
-  const handleLogout = () => {
-    localStorage.removeItem('access');
-    localStorage.removeItem('refresh');
-    localStorage.removeItem('role');
-    navigate('/login');
-  };
-
-  const renderContent = () => {
-    if (isLoading) {
-      return (
-        <div className="flex items-center justify-center h-full">
-          <Loader2 className="w-12 h-12 animate-spin text-[#9E7FFF]" />
-        </div>
-      );
-    }
-    if (error) {
-        return <div className="bg-red-900/30 border border-red-500 text-red-300 p-4 rounded-lg m-8">{error}</div>;
-    }
-    switch (activeTab) {
-      case 'dashboard':
-        return <DashboardOverview initialData={dashboardData} />;
-      case 'teams':
-        return <TeamsView teams={dashboardData?.teams || []} />;
-      case 'players':
-        return <PlayersView players={dashboardData?.players || []} onPlayersUpdate={fetchData} />;
-      case 'sessions':
-        return (
-          <div className="max-w-5xl mx-auto space-y-6">
-            <CreateSessionCard sports={sports} />
-            <UploadCsvCard />
-          </div>
-        );
-      case 'proposals':
-        return (
-          <div className="max-w-7xl mx-auto">
-            <header className="mb-6 flex items-center justify-between">
-              <div>
-                <h1 className="text-3xl font-bold">Team Proposals</h1>
-                <p className="text-[#A3A3A3]">Create a team proposal from your students and submit to your manager.</p>
-              </div>
-            </header>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-[#262626] p-4 rounded-2xl border border-[#2F2F2F]">
-                <h2 className="text-xl font-semibold mb-3">New Proposal</h2>
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs text-[#A3A3A3] mb-1">Team Name</label>
-                    <input
-                      value={proposalForm.teamName}
-                      onChange={(e) => setProposalForm(v => ({ ...v, teamName: e.target.value }))}
-                      className="w-full p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg focus:outline-none"
-                      placeholder="e.g., Wildcats"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-[#A3A3A3] mb-1">Sport</label>
-                    <select
-                      value={proposalForm.sportId}
-                      onChange={(e) => setProposalForm(v => ({ ...v, sportId: e.target.value }))}
-                      className="w-full p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg focus:outline-none"
-                    >
-                      <option value="">Select sport</option>
-                      {sports.map(s => (
-                        <option key={s.id} value={s.id}>{s.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-[#A3A3A3] mb-1">Player IDs (comma-separated)</label>
-                    <input
-                      value={proposalForm.playerIds}
-                      onChange={(e) => setProposalForm(v => ({ ...v, playerIds: e.target.value }))}
-                      className="w-full p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg focus:outline-none"
-                      placeholder="e.g., 12,15,18"
-                    />
-                    <p className="text-[11px] text-[#A3A3A3] mt-1">Only your students in the selected sport and not in any team will be accepted.</p>
-                  </div>
-                  <button
-                    onClick={async () => {
-                      try {
-                        const managerId = null; // Manager determined server-side by permissions or pass known manager user id
-                        const ids = (proposalForm.playerIds || '').split(',').map(s => Number(s.trim())).filter(Boolean);
-                        await createTeamProposal({
-                          managerId: managerId || undefined,
-                          sportId: Number(proposalForm.sportId),
-                          teamName: proposalForm.teamName,
-                          playerIds: ids,
-                        });
-                        const p = await listTeamProposals();
-                        setProposals(p.data || []);
-                        setProposalForm({ teamName: '', sportId: '', playerIds: '' });
-                      } catch (e) {
-                        alert(e?.response?.data?.detail || 'Failed to create proposal');
-                      }
-                    }}
-                    className="w-full bg-[#9E7FFF] text-white font-bold py-2 rounded-lg hover:bg-purple-600"
-                  >
-                    Submit Proposal
-                  </button>
-                </div>
-              </div>
-
-              <div className="bg-[#262626] p-4 rounded-2xl border border-[#2F2F2F]">
-                <h2 className="text-xl font-semibold mb-3">My Proposals</h2>
-                <div className="space-y-3">
-                  {proposals.length ? proposals.map(pr => (
-                    <div key={pr.id} className="border border-[#2F2F2F] rounded-lg p-3">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-medium">{pr.team_name}</div>
-                          <div className="text-xs text-[#A3A3A3]">{pr.sport?.name || 'Sport'} • {new Date(pr.created_at).toLocaleString()}</div>
-                        </div>
-                        <div className="text-xs">{pr.status}</div>
-                      </div>
-                      <div className="text-xs text-[#A3A3A3] mt-2">Players: {(pr.proposed_players||[]).map(p => p.user?.username || p.id).join(', ') || '-'}</div>
-                    </div>
-                  )) : (
-                    <div className="text-sm text-[#A3A3A3]">No proposals yet.</div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      case 'notifications':
-        return (
-          <div className="max-w-5xl mx-auto space-y-6">
-            <div className="bg-[#262626] p-4 rounded-2xl border border-[#2F2F2F]">
-              <div className="font-semibold mb-3">My Notifications</div>
-              <div className="space-y-2">
-                {notifications.length ? notifications.map(n => (
-                  <div key={n.id} className="border border-[#2F2F2F] rounded px-3 py-2 text-sm flex items-center justify-between">
-                    <div>
-                      <div className="font-medium">{n.title}</div>
-                      <div className="text-xs text-[#A3A3A3]">{n.message}</div>
-                    </div>
-                    <div className="text-[11px] text-[#A3A3A3]">{new Date(n.created_at).toLocaleString()}</div>
-                  </div>
-                )) : <div className="text-sm text-[#A3A3A3]">No notifications</div>}
-              </div>
-            </div>
-
-            <div className="bg-[#262626] p-4 rounded-2xl border border-[#2F2F2F]">
-              <div className="font-semibold mb-3">Respond to Team Assignment</div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <input
-                  placeholder="Assignment ID"
-                  value={assignmentId}
-                  onChange={(e) => setAssignmentId(e.target.value)}
-                  className="w-full p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg focus:outline-none"
-                />
-                <button
-                  onClick={async () => {
-                    try {
-                      await acceptTeamAssignment(Number(assignmentId));
-                      alert('Assignment accepted');
-                      setAssignmentId('');
-                    } catch (e) {
-                      alert(e?.response?.data?.detail || 'Failed to accept');
-                    }
-                  }}
-                  className="px-4 py-2 rounded bg-[#9E7FFF] text-white"
-                >Accept</button>
-                <button
-                  onClick={async () => {
-                    try {
-                      await rejectTeamAssignment(Number(assignmentId), 'No thanks');
-                      alert('Assignment rejected');
-                      setAssignmentId('');
-                    } catch (e) {
-                      alert(e?.response?.data?.detail || 'Failed to reject');
-                    }
-                  }}
-                  className="px-4 py-2 rounded border"
-                >Reject</button>
-              </div>
-            </div>
-          </div>
-        );
-      case 'profile':
-        return <ProfileView />;
-      default:
-        return <DashboardOverview initialData={dashboardData} />;
+  const handleCreateSession = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const data = Object.fromEntries(formData.entries());
+    
+    try {
+      const res = await createSession({
+        sport: parseInt(data.sport, 10),
+        title: data.title,
+        notes: data.notes,
+      });
+      // Add session to state with its new ID and the form data
+      setSessions(prev => [{ id: res.data.id, ...data, sport: sports.find(s => s.id === parseInt(data.sport))?.name || 'Unknown Sport' }, ...prev]);
+      setCreateModalOpen(false);
+    } catch (err) {
+      console.error("Failed to create session:", err);
+      alert("Error: Could not create session.");
     }
   };
 
-  return (
-    <div className="min-h-screen bg-[#171717] text-white flex">
-      {/* Sidebar */}
-      <aside className="w-64 bg-[#262626] border-r border-[#2F2F2F] flex flex-col p-4">
-        <div className="text-2xl font-bold text-white mb-10 px-2">Social Sports</div>
-        <nav className="flex flex-col gap-2">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === item.id
-                  ? 'bg-[#9E7FFF] text-white'
-                  : 'text-[#A3A3A3] hover:bg-[#3f3f46] hover:text-white'
-              }`}
-            >
-              <item.icon size={20} />
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </nav>
-        <div className="mt-auto">
-           <button
-              onClick={handleLogout}
-              className="flex w-full items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-[#A3A3A3] hover:bg-[#3f3f46] hover:text-white transition-colors"
-            >
-              <LogOut size={20} />
-              <span>Logout</span>
-            </button>
-        </div>
-      </aside>
+  const handleDownloadTemplate = async (sessionId) => {
+    try {
+      const blob = await getSessionCsvTemplate(sessionId);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = `session_${sessionId}_template.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err) {
+      console.error("Failed to download template:", err);
+      alert("Error: Could not download template.");
+    }
+  };
 
-      {/* Main Content */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="p-4 sm:p-8">
-            {renderContent()}
-        </div>
-      </main>
-    </div>
-  );
-}
+  const handleUploadCsv = async () => {
+    if (!uploadFile || !selectedSession) return;
+    setIsUploading(true);
+    setUploadResult(null);
+    try {
+      const res = await uploadSessionCsv(selectedSession.id, uploadFile);
+      setUploadResult({ success: true, data: res.data });
+    } catch (err) {
+      setUploadResult({ success: false, data: err.response?.data || { detail: "An unknown error occurred." } });
+      console.error("Failed to upload CSV:", err);
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
-function CreateSessionCard({ sports }) {
-  const [form, setForm] = useState({ sportId: '', title: '', notes: '' });
-  const [creating, setCreating] = useState(false);
-  const [createdId, setCreatedId] = useState('');
-  const { createSession, getSessionCsvTemplate } = require('../services/coach');
+  const openUploadModal = (session) => {
+    setSelectedSession(session);
+    setUploadFile(null);
+    setUploadResult(null);
+    setUploadModalOpen(true);
+  };
+
+  if (isLoading) {
+    return <div className="bg-[#171717] min-h-screen flex items-center justify-center text-white">Loading Coach Dashboard...</div>;
+  }
+
   return (
-    <div className="bg-[#262626] p-4 rounded-2xl border border-[#2F2F2F]">
-      <div className="font-semibold mb-3">Create Session</div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <select
-          value={form.sportId}
-          onChange={(e) => setForm(v => ({ ...v, sportId: e.target.value }))}
-          className="p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg"
-        >
-          <option value="">Select sport</option>
-          {sports.map(s => (
-            <option key={s.id} value={s.id}>{s.name}</option>
-          ))}
-        </select>
-        <input
-          placeholder="Title"
-          value={form.title}
-          onChange={(e) => setForm(v => ({ ...v, title: e.target.value }))}
-          className="p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg"
-        />
-        <input
-          placeholder="Notes"
-          value={form.notes}
-          onChange={(e) => setForm(v => ({ ...v, notes: e.target.value }))}
-          className="p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg"
-        />
-      </div>
-      <div className="mt-3 flex items-center gap-3">
-        <button
-          disabled={creating}
-          onClick={async () => {
-            try {
-              setCreating(true);
-              const payload = { sport: Number(form.sportId), title: form.title, notes: form.notes };
-              const res = await createSession(payload);
-              setCreatedId(res.data?.id || '');
-            } catch (e) {
-              alert(e?.response?.data?.detail || 'Failed to create');
-            } finally {
-              setCreating(false);
-            }
-          }}
-          className="px-4 py-2 bg-[#9E7FFF] text-white rounded"
-        >{creating ? 'Creating...' : 'Create Session'}</button>
-        {createdId && (
+    <div className="min-h-screen bg-[#171717] text-white p-4 sm:p-8">
+      <div className="max-w-7xl mx-auto">
+        <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8">
+          <div>
+            <h1 className="text-4xl font-bold">Coach Dashboard</h1>
+            <p className="text-[#A3A3A3] mt-1">Manage your teams, players, and sessions.</p>
+          </div>
           <button
-            onClick={async () => {
-              try {
-                const blob = await getSessionCsvTemplate(createdId);
-                const url = window.URL.createObjectURL(new Blob([blob]));
-                const a = document.createElement('a');
-                a.href = url; a.download = `session_${createdId}_template.csv`; a.click();
-                window.URL.revokeObjectURL(url);
-              } catch (e) {
-                alert('Failed to download template');
-              }
-            }}
-            className="px-4 py-2 border rounded"
-          >Download CSV Template</button>
-        )}
-      </div>
-    </div>
-  );
-}
+            onClick={() => setCreateModalOpen(true)}
+            className="mt-4 sm:mt-0 flex items-center gap-2 bg-[#9E7FFF] text-white font-bold py-2 px-4 rounded-lg hover:bg-purple-600 transition-all duration-300"
+          >
+            <PlusCircle size={20} />
+            Create Session
+          </button>
+        </header>
 
-function UploadCsvCard() {
-  const [sessionId, setSessionId] = useState('');
-  const [file, setFile] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const { uploadSessionCsv } = require('../services/coach');
-  return (
-    <div className="bg-[#262626] p-4 rounded-2xl border border-[#2F2F2F]">
-      <div className="font-semibold mb-3">Upload Attendance CSV</div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-        <input
-          placeholder="Session ID"
-          value={sessionId}
-          onChange={(e) => setSessionId(e.target.value)}
-          className="p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg"
-        />
-        <input
-          type="file"
-          accept=".csv"
-          onChange={(e) => setFile(e.target.files?.[0] || null)}
-          className="p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg"
-        />
-        <button
-          disabled={uploading || !file || !sessionId}
-          onClick={async () => {
-            try {
-              setUploading(true);
-              await uploadSessionCsv(Number(sessionId), file);
-              alert('Uploaded');
-              setFile(null); setSessionId('');
-            } catch (e) {
-              alert(e?.response?.data?.detail || 'Failed to upload');
-            } finally {
-              setUploading(false);
-            }
-          }}
-          className="px-4 py-2 bg-[#9E7FFF] text-white rounded"
-        >{uploading ? 'Uploading...' : 'Upload'}</button>
+        {error && <div className="bg-red-900/30 border border-red-500 text-red-300 p-4 rounded-lg mb-6">{error}</div>}
+
+        {/* Stat Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          <div className="bg-[#262626] p-6 rounded-2xl border border-[#2F2F2F] flex items-center gap-4">
+            <div className="bg-purple-900/50 p-3 rounded-lg"><Users className="text-[#9E7FFF]" size={28} /></div>
+            <div>
+              <p className="text-[#A3A3A3] text-sm">Total Players</p>
+              <p className="text-2xl font-bold">{dashboardData.players.length}</p>
+            </div>
+          </div>
+          <div className="bg-[#262626] p-6 rounded-2xl border border-[#2F2F2F] flex items-center gap-4">
+            <div className="bg-sky-900/50 p-3 rounded-lg"><ClipboardList className="text-[#38bdf8]" size={28} /></div>
+            <div>
+              <p className="text-[#A3A3A3] text-sm">Managed Teams</p>
+              <p className="text-2xl font-bold">{dashboardData.teams.length}</p>
+            </div>
+          </div>
+           <div className="bg-[#262626] p-6 rounded-2xl border border-[#2F2F2F] flex items-center gap-4">
+            <div className="bg-pink-900/50 p-3 rounded-lg"><FileText className="text-[#f472b6]" size={28} /></div>
+            <div>
+              <p className="text-[#A3A3A3] text-sm">Sessions Created</p>
+              <p className="text-2xl font-bold">{sessions.length}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Recent Sessions */}
+        <div className="bg-[#262626] p-6 rounded-2xl border border-[#2F2F2F]">
+          <h2 className="text-2xl font-bold mb-4">Recent Sessions</h2>
+          <div className="space-y-4">
+            {sessions.length > 0 ? (
+              sessions.map(session => (
+                <div key={session.id} className="bg-[#171717] p-4 rounded-lg flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div>
+                    <h3 className="font-bold text-lg">{session.title}</h3>
+                    <p className="text-sm text-[#A3A3A3]">{session.sport} - Notes: {session.notes || 'N/A'}</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button onClick={() => handleDownloadTemplate(session.id)} className="flex items-center gap-2 text-sm bg-[#2F2F2F] py-2 px-3 rounded-md hover:bg-gray-700 transition-colors">
+                      <Download size={16} /> Template
+                    </button>
+                    <button onClick={() => openUploadModal(session)} className="flex items-center gap-2 text-sm bg-[#9E7FFF] py-2 px-3 rounded-md hover:bg-purple-600 transition-colors">
+                      <Upload size={16} /> Attendance
+                    </button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-center text-[#A3A3A3] py-8">No sessions created yet. Click "Create Session" to get started.</p>
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* Create Session Modal */}
+      <Modal isOpen={isCreateModalOpen} onClose={() => setCreateModalOpen(false)} title="Create New Session">
+        <form onSubmit={handleCreateSession} className="space-y-4">
+          <div>
+            <label htmlFor="title" className="block text-sm font-medium text-[#A3A3A3] mb-1">Title</label>
+            <input type="text" name="title" id="title" required className="w-full p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E7FFF]" />
+          </div>
+          <div>
+            <label htmlFor="sport" className="block text-sm font-medium text-[#A3A3A3] mb-1">Sport</label>
+            <select name="sport" id="sport" required className="w-full p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E7FFF]">
+              {sports.length > 0 ? sports.map(sport => (
+                <option key={sport.id} value={sport.id}>{sport.name}</option>
+              )) : <option disabled>No sports available</option>}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="notes" className="block text-sm font-medium text-[#A3A3A3] mb-1">Notes (Optional)</label>
+            <textarea name="notes" id="notes" rows="3" className="w-full p-2 bg-[#171717] border border-[#2F2F2F] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#9E7FFF]"></textarea>
+          </div>
+          <button type="submit" className="w-full bg-[#9E7FFF] text-white font-bold p-2 rounded-lg hover:bg-purple-600 transition-colors">Create</button>
+        </form>
+      </Modal>
+
+      {/* Upload CSV Modal */}
+      <Modal isOpen={isUploadModalOpen} onClose={() => setUploadModalOpen(false)} title={`Upload Attendance for "${selectedSession?.title}"`}>
+        <div className="space-y-4">
+          <p className="text-sm text-[#A3A3A3]">Upload the completed CSV file. Ensure it follows the template format: <code className="bg-[#171717] px-1 rounded">player_id,attended,score</code>.</p>
+          <div>
+            <label htmlFor="csvFile" className="w-full cursor-pointer border-2 border-dashed border-[#2F2F2F] rounded-lg p-6 flex flex-col items-center justify-center hover:border-[#9E7FFF] transition-colors">
+              <Upload size={32} className="text-[#A3A3A3] mb-2" />
+              <span className="text-white font-semibold">{uploadFile ? uploadFile.name : 'Click to select a file'}</span>
+              <span className="text-xs text-[#A3A3A3]">CSV up to 5MB</span>
+            </label>
+            <input type="file" id="csvFile" accept=".csv" onChange={(e) => setUploadFile(e.target.files[0])} className="hidden" />
+          </div>
+          
+          {uploadResult && (
+            <div className={`p-3 rounded-lg text-sm ${uploadResult.success ? 'bg-green-900/30 text-green-300' : 'bg-red-900/30 text-red-300'}`}>
+              {uploadResult.success ? (
+                <div className="flex gap-2">
+                  <CheckCircle className="flex-shrink-0 mt-0.5" />
+                  <div>
+                    <strong>Success!</strong> {uploadResult.data.updated} records updated.
+                    {uploadResult.data.errors?.length > 0 && <span className="ml-2">({uploadResult.data.errors.length} errors)</span>}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <AlertCircle className="flex-shrink-0 mt-0.5" />
+                  <strong>Upload Failed.</strong>
+                </div>
+              )}
+              {uploadResult.data.errors?.length > 0 && (
+                <ul className="mt-2 list-disc list-inside text-xs space-y-1 max-h-32 overflow-y-auto">
+                  {uploadResult.data.errors.map((err, i) => <li key={i}>Row {err.row}: {err.error} (Player ID: {err.player_id})</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <button onClick={handleUploadCsv} disabled={!uploadFile || isUploading} className="w-full bg-[#9E7FFF] text-white font-bold p-2 rounded-lg hover:bg-purple-600 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center justify-center">
+            {isUploading ? (
+              <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            ) : 'Upload & Process File'}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }
