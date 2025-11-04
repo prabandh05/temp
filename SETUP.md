@@ -59,12 +59,142 @@ python manage.py createsuperuser
 ```
 
 ### 7. Seed Demo Data
-```bash
-# Clear existing demo data and seed fresh data
-python manage.py seed_demo --clear
 
-# Or just add demo data without clearing
+The `seed_demo` command is a crucial step that populates your database with comprehensive demo data for testing and development. This allows you to immediately start exploring the platform without manually creating users, teams, and tournaments.
+
+#### What the Seed Command Does
+
+The `seed_demo` command creates a complete set of demo data including:
+
+1. **Sports** (4 sports):
+   - Cricket (Team Sport)
+   - Football (Team Sport)
+   - Basketball (Team Sport)
+   - Running (Individual Sport)
+
+2. **Coaches** (4 coaches):
+   - One coach per sport
+   - Usernames: `demo_coach_cricket`, `demo_coach_football`, `demo_coach_basketball`, `demo_coach_running`
+   - All passwords: `demo123`
+
+3. **Players** (55 total players):
+   - **30 Cricket Players**: `demo_cricket_player_01` through `demo_cricket_player_30`
+     - These players are **NOT linked to coaches initially** (to demonstrate the coach invitation flow)
+     - Sport profiles created but inactive
+   - **10 Football Players**: `demo_football_player_01` through `demo_football_player_10`
+     - **Auto-linked** to the Football coach as students
+   - **10 Basketball Players**: `demo_basketball_player_01` through `demo_basketball_player_10`
+     - **Auto-linked** to the Basketball coach as students
+   - **5 Running Players**: `demo_running_player_01` through `demo_running_player_05`
+     - **Auto-linked** to the Running coach as students
+   - All player passwords: `demo123`
+
+4. **Sport-Specific Statistics**:
+   - Cricket stats (runs, wickets, matches_played, strike_rate, average)
+   - Football stats (goals, assists, tackles, matches_played)
+   - Basketball stats (points, rebounds, assists, matches_played)
+   - Running stats (total_distance_km, best_time_seconds, events_participated)
+   - All stats start at zero (ready for testing)
+
+#### Running the Seed Command
+
+**Option 1: Clear and Seed (Recommended for first-time setup)**
+```bash
+cd backend
+python manage.py seed_demo --clear
+```
+
+The `--clear` flag will:
+- Delete all existing demo users (usernames starting with "demo_")
+- Delete all associated demo player profiles
+- Delete all associated demo coach profiles
+- Then create fresh demo data
+
+**Option 2: Add Without Clearing (For adding more demo data)**
+```bash
+cd backend
 python manage.py seed_demo
+```
+
+This will add demo data without deleting existing demo users. Useful if you want to preserve existing demo data and add more.
+
+#### What Happens After Seeding
+
+After running the seed command, you'll see output like:
+
+```
+✓ Sport: Cricket
+✓ Sport: Football
+✓ Sport: Basketball
+✓ Sport: Running
+✓ Coach: demo_coach_cricket (ID: C2500001)
+✓ Coach: demo_coach_football (ID: C2500002)
+...
+✓ Cricket Player 1: demo_cricket_player_01
+✓ Cricket Player 2: demo_cricket_player_02
+...
+✓ Football Player 1: demo_football_player_01 (Linked to coach)
+...
+
+============================================================
+CLEAN DEMO DATA SEEDED SUCCESSFULLY!
+============================================================
+Sports: Cricket, Football, Basketball, Running
+Coaches: 4 (one per sport)
+Cricket Players: 30 (NOT linked to coaches - ready for invitation flow)
+Football Players: 10 (Linked to coach as students)
+Basketball Players: 10 (Linked to coach as students)
+Running Players: 5 (Linked to coach as students)
+...
+```
+
+#### Important Notes About Demo Data
+
+- **Cricket Players**: Intentionally NOT linked to coaches to demonstrate the coach invitation workflow
+- **Other Sports Players**: Automatically linked to their respective coaches as students
+- **No Teams, Tournaments, or Sessions**: The base seed command creates users and profiles only. Teams, tournaments, and coaching sessions need to be created through the application interface or additional seed commands
+- **Stats Start at Zero**: All sport statistics are initialized at zero, ready for testing and data entry
+- **No Achievements**: Achievement badges are not created by default - they're generated when players complete tournaments or reach milestones
+
+#### Testing the Demo Data
+
+After seeding, you can:
+
+1. **Login as a Coach**:
+   - See linked students (Football, Basketball, Running coaches)
+   - See unlinked Cricket players (Cricket coach can invite them)
+   - Create coaching sessions
+   - Propose teams
+
+2. **Login as a Cricket Player**:
+   - See your profile (inactive, not linked to coach)
+   - Accept coach invitations if sent
+   - View sport statistics
+
+3. **Login as Other Sport Players**:
+   - See active profiles linked to coaches
+   - View coach information
+   - See sport-specific statistics
+
+#### Troubleshooting Seed Command
+
+**If you get foreign key errors:**
+```bash
+# Ensure migrations are applied first
+python manage.py migrate
+python manage.py seed_demo --clear
+```
+
+**If demo users already exist:**
+```bash
+# Use --clear flag to remove existing demo data
+python manage.py seed_demo --clear
+```
+
+**If you want to reset everything:**
+```bash
+# Clear all demo data and start fresh
+python manage.py seed_demo --clear
 ```
 
 ### 8. Start Backend Server
@@ -99,47 +229,78 @@ The frontend will run on `http://localhost:3000`
 
 ## Demo Credentials
 
-After running the seed command, you can use these credentials to login:
+After running the `seed_demo --clear` command, you can use these credentials to login:
 
-### Admin
-- **Username:** `demo_admin`
-- **Password:** `demo123`
-
-### Coaches (one per sport)
+### Coaches (One per sport)
 - **Username:** `demo_coach_cricket` / `demo_coach_football` / `demo_coach_basketball` / `demo_coach_running`
 - **Password:** `demo123`
 
-### Managers (one per sport)
-- **Username:** `demo_manager_cricket` / `demo_manager_football` / `demo_manager_basketball` / `demo_manager_running`
-- **Password:** `demo123`
-
 ### Players
-- **Username:** `demo_player01` through `demo_player20`
+
+**Cricket Players** (30 players - NOT linked to coaches initially):
+- **Username:** `demo_cricket_player_01` through `demo_cricket_player_30`
+- **Password:** `demo123`
+- **Note**: These players are not linked to coaches to demonstrate the invitation flow
+
+**Football Players** (10 players - Auto-linked to Football coach):
+- **Username:** `demo_football_player_01` through `demo_football_player_10`
 - **Password:** `demo123`
 
-## What's Included in Demo Data
+**Basketball Players** (10 players - Auto-linked to Basketball coach):
+- **Username:** `demo_basketball_player_01` through `demo_basketball_player_10`
+- **Password:** `demo123`
 
-The seed command creates:
+**Running Players** (5 players - Auto-linked to Running coach):
+- **Username:** `demo_running_player_01` through `demo_running_player_05`
+- **Password:** `demo123`
 
-1. **4 Sports:** Cricket, Football, Basketball, Running
-2. **4 Coaches:** One per sport
-3. **4 Managers:** One per sport
-4. **20 Players:** With full profiles and stats
-5. **8 Teams:** 2 per team sport (Cricket has 4 teams in tournament)
-6. **40 Coaching Sessions:** 10 per sport with attendance records
-7. **4 Tournaments:** One per sport
-   - **Cricket Tournament:** 
-     - Status: ONGOING
-     - 4 teams
-     - Multiple matches (some completed, one IN_PROGRESS ready for scoring)
-     - Points table, leaderboard, match stats
-   - **Other Sports:** UPCOMING tournaments with teams
-8. **Comprehensive Stats:**
-   - Sport-specific statistics (Cricket, Football, Basketball, Running)
-   - Player career scores
-   - Match player stats
-   - Tournament points table
-   - Live cricket match state (ready for scoring)
+### Admin & Managers
+
+**Note**: The base `seed_demo` command does NOT create admin or manager accounts. You'll need to:
+- Create admin users via: `python manage.py createsuperuser`
+- Create manager accounts through the application interface or Django admin
+
+## Complete Demo Data Overview
+
+The `seed_demo` command creates a foundational dataset for testing. Here's what you get:
+
+### Base Seed Data (Created by `seed_demo` command)
+
+1. **4 Sports:**
+   - Cricket (Team Sport)
+   - Football (Team Sport)
+   - Basketball (Team Sport)
+   - Running (Individual Sport)
+
+2. **4 Coaches:**
+   - One coach per sport with auto-generated coach IDs
+   - Each coach has their own dashboard access
+
+3. **55 Players:**
+   - 30 Cricket players (not linked to coaches - ready for invitation flow)
+   - 10 Football players (auto-linked to Football coach)
+   - 10 Basketball players (auto-linked to Basketball coach)
+   - 5 Running players (auto-linked to Running coach)
+
+4. **Sport-Specific Statistics:**
+   - All players have sport profiles with initialized stats
+   - Cricket: runs, wickets, matches_played, strike_rate, average
+   - Football: goals, assists, tackles, matches_played
+   - Basketball: points, rebounds, assists, matches_played
+   - Running: total_distance_km, best_time_seconds, events_participated
+
+### Additional Data (To Be Created Through Application)
+
+The base seed command creates users and profiles. You'll need to create the following through the application interface:
+
+- **Managers**: Create manager accounts and assign them to sports
+- **Teams**: Managers or coaches can create teams
+- **Coaching Sessions**: Coaches can create sessions and upload attendance
+- **Tournaments**: Managers can create tournaments and add teams
+- **Tournament Matches**: Create matches within tournaments
+- **Achievements**: Auto-generated when players complete tournaments
+
+**Note**: For a complete setup with teams, tournaments, and matches already created, you may need to run additional seed commands or use the Django admin interface to create managers and tournaments.
 
 ## Testing the Cricket Tournament System
 
