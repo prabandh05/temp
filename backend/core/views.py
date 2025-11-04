@@ -11,7 +11,7 @@ from .models import (
     PromotionRequest, Player, Sport, CoachingSession, PlayerSportProfile, SessionAttendance,
     CoachPlayerLinkRequest, Leaderboard, Notification, Manager, ManagerSport, TeamProposal,
     TeamAssignmentRequest, Tournament, TournamentTeam, TournamentMatch, CricketMatchState,
-    MatchPlayerStats, TournamentPoints, Team
+    MatchPlayerStats, TournamentPoints, Team, Coach
 )
 from django.utils import timezone
 from .serializers import (
@@ -24,6 +24,7 @@ from .serializers import (
     TournamentMatchCreateSerializer, TournamentMatchSerializer,
     ManagerSportSerializer, PlayerSportProfileSerializer, PlayerSportProfileUpdateSerializer,
     CricketMatchStateSerializer, MatchPlayerStatsSerializer, TournamentPointsSerializer,
+    CoachSerializer,
 )
 from .permissions import IsAuthenticatedAndPlayer, IsAuthenticatedAndManagerOrAdmin, IsAuthenticatedAndCoach
 from .promotion_services import (
@@ -99,7 +100,10 @@ class CoachingSessionViewSet(viewsets.GenericViewSet):
         serializer = CoachingSessionCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         coach = request.user.coach
-        session = CoachingSession.objects.create(coach=coach, **serializer.validated_data)
+        # Remove sport_id from validated_data since we've converted it to sport
+        validated_data = serializer.validated_data.copy()
+        validated_data.pop('sport_id', None)
+        session = CoachingSession.objects.create(coach=coach, **validated_data)
         return Response({"id": session.id}, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["get"], url_path="csv-template")
@@ -417,7 +421,16 @@ class CoachPlayerLinkViewSet(viewsets.GenericViewSet):
         if request.user.role == User.Roles.PLAYER:
             qs = qs.filter(player__user=request.user, status="pending")
         elif request.user.role == User.Roles.COACH:
-            qs = qs.filter(coach__user=request.user, status="pending")
+            # Coaches should see requests where they are the coach (player requesting them)
+            # Check if user has coach profile
+            if not hasattr(request.user, 'coach'):
+                return Response([])
+            qs = qs.filter(coach__user=request.user, status="pending", direction="player_to_coach")
+            # Debug logging
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Coach {request.user.username} link requests query: {qs.query}")
+            logger.info(f"Found {qs.count()} requests")
         elif request.user.role == User.Roles.ADMIN:
             qs = qs.filter(status="pending")
         else:
@@ -1027,7 +1040,7 @@ def player_dashboard(request):
     profile_blocks = [get_stats_and_rank(p) for p in profiles]
 
     # Available sports and inferred primary sport
-    all_sports = list(Sport.objects.values("name", "sport_type"))
+    all_sports = list(Sport.objects.values("id", "name", "sport_type"))
     primary_profile = profiles.order_by("joined_date").first() if hasattr(profiles, "order_by") else (profiles[0] if profiles else None)
     primary_sport = primary_profile.sport.name if primary_profile and primary_profile.sport else None
 
@@ -1638,15 +1651,27 @@ class TournamentMatchViewSet(viewsets.ModelViewSet):
                 state.save()
             
             # Initialize MatchPlayerStats for all players in both teams
+            import logging
+            logger = logging.getLogger(__name__)
             for team in [match.team1, match.team2]:
                 team_players = PlayerSportProfile.objects.filter(
                     team=team,
                     sport=match.tournament.sport,
                     is_active=True
-                ).select_related("player")
+                ).select_related("player__user")
+                
+                logger.info(f"Creating MatchPlayerStats for team {team.name} (ID: {team.id}): found {team_players.count()} players")
+                
+                if team_players.count() == 0:
+                    # Try without is_active filter as fallback
+                    team_players = PlayerSportProfile.objects.filter(
+                        team=team,
+                        sport=match.tournament.sport
+                    ).select_related("player__user")
+                    logger.warning(f"No active players found for team {team.name}, trying all players: found {team_players.count()}")
                 
                 for profile in team_players:
-                    MatchPlayerStats.objects.get_or_create(
+                    stat, created = MatchPlayerStats.objects.get_or_create(
                         match=match,
                         player=profile.player,
                         team=team,
@@ -1657,6 +1682,8 @@ class TournamentMatchViewSet(viewsets.ModelViewSet):
                             "runs_conceded": 0,
                         }
                     )
+                    if created:
+                        logger.info(f"Created MatchPlayerStats for player {profile.player.user.username} (ID: {profile.player.id}) in team {team.name}")
             
             # Initialize TournamentPoints if not exists
             for team in [match.team1, match.team2]:
@@ -2083,7 +2110,9 @@ class TournamentMatchViewSet(viewsets.ModelViewSet):
         """Get player stats for this match."""
         try:
             match = self.get_queryset().get(pk=pk)
-            stats = MatchPlayerStats.objects.filter(match=match).select_related("player", "team")
+            stats = MatchPlayerStats.objects.filter(match=match).select_related(
+                "player__user", "team", "team__sport"
+            ).prefetch_related("player__user")
             return Response(MatchPlayerStatsSerializer(stats, many=True).data)
         except TournamentMatch.DoesNotExist:
             return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -2124,6 +2153,19 @@ class ManagerSportAssignmentViewSet(viewsets.GenericViewSet):
         if self.request.user.role != User.Roles.ADMIN:
             return [IsAuthenticated()]
         return super().get_permissions()
+
+    def list(self, request):
+        """List manager-sport assignments. Managers see their own, admins see all."""
+        qs = self.get_queryset()
+        if request.user.role == User.Roles.MANAGER:
+            if hasattr(request.user, 'manager'):
+                qs = qs.filter(manager=request.user.manager)
+            else:
+                qs = qs.none()
+        elif request.user.role != User.Roles.ADMIN:
+            qs = qs.none()
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
 
     def create(self, request):
         """Admin assigns manager to sport."""
@@ -2219,3 +2261,28 @@ class PlayerSportProfileViewSet(viewsets.ModelViewSet):
         self.perform_update(serializer)
 
         return Response(PlayerSportProfileSerializer(instance).data)
+
+
+# -----------------------------
+# Coach ViewSet
+# -----------------------------
+class CoachViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet for listing coaches. Players can view available coaches by sport.
+    """
+    queryset = Coach.objects.select_related("user", "primary_sport").filter(primary_sport__isnull=False)
+    serializer_class = CoachSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """Filter coaches by sport if sport_id is provided."""
+        qs = super().get_queryset()
+        sport_id = self.request.query_params.get('sport_id')
+        if sport_id:
+            try:
+                sport_id_int = int(sport_id)
+                qs = qs.filter(primary_sport_id=sport_id_int)
+            except (ValueError, TypeError):
+                # If sport_id is invalid, return empty queryset
+                qs = qs.none()
+        return qs

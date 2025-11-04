@@ -11,6 +11,7 @@ from .views import (
     PromotionRequestViewSet, CoachingSessionViewSet, CoachPlayerLinkViewSet, NotificationViewSet,
     SportViewSet, TeamProposalViewSet, TeamAssignmentRequestViewSet, TournamentViewSet,
     TournamentMatchViewSet, ManagerSportAssignmentViewSet, PlayerSportProfileViewSet,
+    CoachViewSet,
 )
 
 
@@ -31,6 +32,7 @@ router.register(r"tournaments", TournamentViewSet, basename="tournaments")
 router.register(r"tournament-matches", TournamentMatchViewSet, basename="tournament-matches")
 router.register(r"manager-sport-assignments", ManagerSportAssignmentViewSet, basename="manager-sport-assignments")
 router.register(r"player-sport-profiles", PlayerSportProfileViewSet, basename="player-sport-profiles")
+router.register(r"coaches", CoachViewSet, basename="coaches")
 
 urlpatterns = [
     

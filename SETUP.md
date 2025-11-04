@@ -13,12 +13,7 @@ This guide will help you set up and run the Sports Management Platform with comp
 
 ## Backend Setup
 
-### 1. Navigate to Backend Directory
-```bash
-cd backend
-```
-
-### 2. Create Virtual Environment (Recommended)
+### 1.Create Virtual Environment (Recommended)
 ```bash
 # Windows
 python -m venv venv
@@ -27,11 +22,16 @@ venv\Scripts\activate
 # Linux/Mac
 python3 -m venv venv
 source venv/bin/activate
-```
+``` 
 
-### 3. Install Dependencies
+### 2. Install Dependencies
 ```bash
 pip install -r requirements.txt
+```
+
+### 3. Navigate to Backend Directory
+```bash
+cd backend
 ```
 
 ### 4. Database Configuration
@@ -49,9 +49,23 @@ DATABASE_PORT=5432
 ```
 
 ### 5. Run Migrations
+
+**Important**: Navigate to the `backend` directory and ensure your virtual environment is activated before running migrations.
+
 ```bash
+cd backend
+# Activate virtual environment if not already activated
+# Windows: venv\Scripts\activate
+# Linux/Mac: source venv/bin/activate
+
+# Create migrations (if they don't exist)
+python manage.py makemigrations
+
+# Apply migrations
 python manage.py migrate
 ```
+
+**Note**: If you get an error like `Dependency on app with no migrations: core`, it means migration files don't exist yet. Run `python manage.py makemigrations` first to create them, then run `migrate`.
 
 ### 6. Create Superuser (Optional)
 ```bash
@@ -332,8 +346,27 @@ The base seed command creates users and profiles. You'll need to create the foll
 - Verify database exists: `CREATE DATABASE social_sports;`
 
 ### Migration Issues
+
+**Error: "Dependency on app with no migrations: core"**
+- This means migration files don't exist yet. Run:
+  ```bash
+  cd backend
+  python manage.py makemigrations
+  python manage.py migrate
+  ```
+
+**Other migration errors:**
 - If you get migration errors, try: `python manage.py migrate --run-syncdb`
-- Or reset migrations: Delete migration files (except `__init__.py`) and run `python manage.py makemigrations`
+- Or reset migrations: Delete migration files (except `__init__.py`) in `backend/core/migrations/` and run:
+  ```bash
+  python manage.py makemigrations
+  python manage.py migrate
+  ```
+
+**Always ensure:**
+- You're in the `backend/` directory
+- Virtual environment is activated
+- Migrations are created before applying them
 
 ### Frontend API Errors
 - Verify backend is running on port 8000
@@ -346,11 +379,12 @@ The base seed command creates users and profiles. You'll need to create the foll
 
 ## Next Steps
 
-1. Run migrations: `python manage.py migrate`
-2. Seed data: `python manage.py seed_demo --clear`
-3. Start backend: `python manage.py runserver`
-4. Start frontend: `npm start` (in frontend directory)
-5. Login and explore!
+1. **Create migrations** (if they don't exist): `python manage.py makemigrations`
+2. **Run migrations**: `python manage.py migrate`
+3. **Seed data**: `python manage.py seed_demo --clear`
+4. **Start backend**: `python manage.py runserver` (in backend directory with venv activated)
+5. **Start frontend**: `npm start` (in frontend directory, new terminal)
+6. **Login and explore!** Use demo credentials from the Demo Credentials section above
 
 ## Support
 

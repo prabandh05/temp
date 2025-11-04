@@ -68,32 +68,52 @@ class SportSerializer(serializers.ModelSerializer):
 
 
 class CoachingSessionCreateSerializer(serializers.ModelSerializer):
+    sport_id = serializers.IntegerField(write_only=True, required=False)
     sport = SportSerializer(read_only=True)
     team = serializers.SerializerMethodField()
     
     class Meta:
         model = CoachingSession
-        fields = ["id", "team", "sport", "session_date", "title", "notes", "is_active"]
-        read_only_fields = ["is_active"]
+        fields = ["id", "team", "sport", "sport_id", "session_date", "title", "notes", "is_active"]
+        read_only_fields = ["is_active", "sport"]
     
     def get_team(self, obj):
         if obj.team:
             return {"id": obj.team.id, "name": obj.team.name}
         return None
-
+    
     def validate(self, attrs):
         request = self.context["request"]
         coach = getattr(request.user, "coach", None)
         if coach is None:
             raise serializers.ValidationError("Only coaches can create sessions")
-        sport = attrs.get("sport")
-        if sport is None:
-            raise serializers.ValidationError({"sport": "Required"})
+        
+        # Get sport from sport_id if provided
+        sport = None
+        sport_id = attrs.get("sport_id")
+        if sport_id:
+            try:
+                sport = Sport.objects.get(id=sport_id)
+                attrs["sport"] = sport
+            except Sport.DoesNotExist:
+                raise serializers.ValidationError({"sport_id": "Invalid sport"})
+        else:
+            # If no sport_id provided, use coach's primary sport
+            if coach.primary_sport:
+                sport = coach.primary_sport
+                attrs["sport"] = sport
+            else:
+                raise serializers.ValidationError({"sport_id": "Required or coach must have a primary sport"})
+        
+        # Validate sport matches coach's primary sport
         if coach.primary_sport_id != sport.id:
-            raise serializers.ValidationError({"sport": "Must match coach primary sport"})
+            raise serializers.ValidationError({"sport_id": "Must match coach primary sport"})
+        
+        # Validate team sport if team is provided
         team = attrs.get("team")
         if team and team.sport_id and team.sport_id != sport.id:
             raise serializers.ValidationError({"team": "Team sport must match session sport"})
+        
         return attrs
 
 
@@ -148,9 +168,51 @@ class PlayerRequestCoachSerializer(serializers.Serializer):
 
 
 class CoachPlayerLinkRequestSerializer(serializers.ModelSerializer):
+    # Use SerializerMethodField to avoid forward reference issues
+    coach = serializers.SerializerMethodField()
+    player = serializers.SerializerMethodField()
+    sport = SportSerializer(read_only=True)
+    
     class Meta:
         model = CoachPlayerLinkRequest
         fields = ["id", "coach", "player", "sport", "direction", "status", "created_at", "decided_at"]
+    
+    def get_coach(self, obj):
+        # Import here to avoid circular import
+        if not obj.coach:
+            return None
+        # Use a simple dict representation to avoid circular import
+        return {
+            "id": obj.coach.id,
+            "coach_id": obj.coach.coach_id,
+            "user": {
+                "id": obj.coach.user.id,
+                "username": obj.coach.user.username,
+                "email": obj.coach.user.email,
+                "first_name": obj.coach.user.first_name,
+                "last_name": obj.coach.user.last_name,
+            },
+            "primary_sport": SportSerializer(obj.coach.primary_sport).data if obj.coach.primary_sport else None,
+            "experience": obj.coach.experience,
+            "specialization": obj.coach.specialization,
+        }
+    
+    def get_player(self, obj):
+        # Import here to avoid circular import
+        if not obj.player:
+            return None
+        # Use a simple dict representation to avoid circular import
+        return {
+            "id": obj.player.id,
+            "player_id": getattr(obj.player, 'player_id', None),
+            "user": {
+                "id": obj.player.user.id,
+                "username": obj.player.user.username,
+                "email": obj.player.user.email,
+                "first_name": obj.player.user.first_name,
+                "last_name": obj.player.user.last_name,
+            },
+        }
 
 
 class LeaderboardSerializer(serializers.ModelSerializer):
@@ -237,13 +299,22 @@ class TeamCreateSerializer(serializers.ModelSerializer):
         user = request.user
         # Manager/admin can create teams
         if user.role in [User.Roles.MANAGER, User.Roles.ADMIN]:
+            attrs["manager"] = user
             if user.role == User.Roles.MANAGER:
-                attrs["manager"] = user
-                sport_id = attrs.get("sport_id")
-                if sport_id:
-                    # Verify manager is assigned to this sport
-                    if not ManagerSport.objects.filter(manager__user=user, sport_id=sport_id).exists():
-                        raise serializers.ValidationError({"sport_id": "You are not assigned to this sport"})
+                # Get the Manager object for this user
+                try:
+                    manager_obj = user.manager
+                    sport_id = attrs.get("sport_id")
+                    if sport_id:
+                        # Verify manager is assigned to this sport
+                        if not ManagerSport.objects.filter(manager=manager_obj, sport_id=sport_id).exists():
+                            # Get available sports for this manager
+                            available_sports = ManagerSport.objects.filter(manager=manager_obj).values_list('sport_id', flat=True)
+                            raise serializers.ValidationError({
+                                "sport_id": f"You are not assigned to this sport. You are assigned to sports: {list(available_sports) if available_sports else 'None'}"
+                            })
+                except AttributeError:
+                    raise serializers.ValidationError({"detail": "Manager profile not found. Please contact admin to set up your manager profile."})
         
         # Handle coach assignment
         coach_id = attrs.pop("coach_id", None)
@@ -259,12 +330,26 @@ class TeamCreateSerializer(serializers.ModelSerializer):
         
         # Handle sport assignment
         sport_id = attrs.pop("sport_id", None)
-        if sport_id:
+        # Convert empty string to None
+        if sport_id == "" or sport_id is None:
+            sport_id = None
+        
+        if sport_id is not None:
             try:
+                sport_id = int(sport_id)  # Ensure it's an integer
                 sport = Sport.objects.get(id=sport_id)
                 attrs["sport"] = sport
-            except Sport.DoesNotExist:
-                raise serializers.ValidationError({"sport_id": "Sport not found"})
+            except (Sport.DoesNotExist, ValueError, TypeError):
+                raise serializers.ValidationError({"sport_id": f"Invalid sport ID: {sport_id}"})
+        elif user.role == User.Roles.MANAGER:
+            # For managers, sport is required
+            raise serializers.ValidationError({"sport_id": "Sport is required for team creation"})
+        
+        # Ensure name is provided
+        name = attrs.get("name", "").strip()
+        if not name:
+            raise serializers.ValidationError({"name": "Team name is required"})
+        attrs["name"] = name
         
         return attrs
 
@@ -323,10 +408,12 @@ class LeaderboardSerializer(serializers.ModelSerializer):
         
 class CoachSerializer(serializers.ModelSerializer):
     user = UserProfileSerializer(read_only=True)
+    coach_id = serializers.CharField(read_only=True)
+    primary_sport = SportSerializer(read_only=True)
 
     class Meta:
         model = Coach
-        fields = ['id', 'user', 'experience', 'specialization']
+        fields = ['id', 'coach_id', 'user', 'primary_sport', 'experience', 'specialization']
 
 
 # -----------------------------
@@ -343,7 +430,7 @@ class ManagerSerializer(serializers.ModelSerializer):
 
 class ManagerSportSerializer(serializers.ModelSerializer):
     manager = ManagerSerializer(read_only=True)
-    sport = serializers.StringRelatedField()
+    sport = SportSerializer(read_only=True)
 
     class Meta:
         model = ManagerSport
@@ -646,13 +733,25 @@ class PlayerSportProfileSerializer(serializers.ModelSerializer):
 
 class PlayerSportProfileUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating PlayerSportProfile (team assignment)"""
+    team_id = serializers.IntegerField(required=False, allow_null=True, write_only=True)
+    
     class Meta:
         model = PlayerSportProfile
-        fields = ["team", "coach", "is_active", "session_count"]
+        fields = ["team", "team_id", "coach", "is_active", "session_count"]
     
     def validate(self, attrs):
         """Prevent multiple team membership per sport."""
         instance = self.instance
+        
+        # Handle team_id if provided (convert to team object)
+        team_id = attrs.pop("team_id", None)
+        if team_id is not None:
+            try:
+                team_obj = Team.objects.select_related("sport").get(id=team_id)
+                attrs["team"] = team_obj
+            except Team.DoesNotExist:
+                raise serializers.ValidationError({"team_id": "Team not found"})
+        
         new_team = attrs.get("team")
         
         # If trying to assign to a team

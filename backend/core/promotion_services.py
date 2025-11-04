@@ -154,10 +154,10 @@ def accept_link_request(link: CoachPlayerLinkRequest, acting_user: User) -> Play
     # Admin can bypass acceptance check
     if acting_user.role != User.Roles.ADMIN:
         if link.direction == CoachPlayerLinkRequest.Direction.COACH_TO_PLAYER:
-            if not hasattr(acting_user, "player") or acting_user.player_id != link.player_id:
+            if not hasattr(acting_user, "player") or acting_user.player.id != link.player_id:
                 raise LinkError("Only the invited player can accept")
         else:
-            if not hasattr(acting_user, "coach") or acting_user.coach_id != link.coach_id:
+            if not hasattr(acting_user, "coach") or acting_user.coach.id != link.coach_id:
                 raise LinkError("Only the invited coach can accept")
 
     psp, _ = PlayerSportProfile.objects.get_or_create(player=link.player, sport=link.sport)
@@ -183,10 +183,10 @@ def reject_link_request(link: CoachPlayerLinkRequest, acting_user: User) -> Coac
     if link.status != CoachPlayerLinkRequest.Status.PENDING:
         raise LinkError("Link request is not pending")
     if link.direction == CoachPlayerLinkRequest.Direction.COACH_TO_PLAYER:
-        if not hasattr(acting_user, "player") or acting_user.player_id != link.player_id:
+        if not hasattr(acting_user, "player") or acting_user.player.id != link.player_id:
             raise LinkError("Only the invited player can reject")
     else:
-        if not hasattr(acting_user, "coach") or acting_user.coach_id != link.coach_id:
+        if not hasattr(acting_user, "coach") or acting_user.coach.id != link.coach_id:
             raise LinkError("Only the invited coach can reject")
     link.status = CoachPlayerLinkRequest.Status.REJECTED
     link.decided_at = timezone.now()

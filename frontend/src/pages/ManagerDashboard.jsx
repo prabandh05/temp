@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Trophy } from "lucide-react";
 import {
   getSports,
+  getManagerSports,
   listTeamProposals,
   approveTeamProposal,
   rejectTeamProposal,
@@ -43,6 +44,7 @@ import {
 
 export default function ManagerDashboard() {
   const [sports, setSports] = useState([]);
+  const [managerSports, setManagerSports] = useState([]); // Sports assigned to this manager
   const [proposals, setProposals] = useState([]);
   const [teams, setTeams] = useState([]);
   const [tournaments, setTournaments] = useState([]);
@@ -85,7 +87,24 @@ export default function ManagerDashboard() {
     try {
       const s = await getSports();
       setSports(s.data || []);
-    } catch {}
+    } catch (e) {
+      console.error('Error fetching sports:', e);
+    }
+    try {
+      // Get manager's assigned sports
+      const ms = await getManagerSports();
+      const managerSportsData = ms.data || [];
+      // Extract sport objects from manager-sport assignments
+      const assignedSports = managerSportsData
+        .map(ms => ms.sport)
+        .filter(s => s); // Remove null/undefined
+      setManagerSports(assignedSports);
+      console.log('Manager assigned sports:', assignedSports);
+    } catch (e) {
+      console.error('Error fetching manager sports:', e);
+      // If manager sports endpoint fails, use all sports (fallback)
+      setManagerSports([]);
+    }
     try {
       const p = await listTeamProposals();
       setProposals(p.data || []);
@@ -170,10 +189,20 @@ export default function ManagerDashboard() {
                 className="p-2 border border-[#334155] rounded bg-[#0f172a] text-white"
               >
                 <option value="">Select sport</option>
-                {sports.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
+                {/* Show only sports assigned to this manager, or all sports if none assigned (for admin) */}
+                {(managerSports.length > 0 ? managerSports : sports).map(s => {
+                  const sportId = s.id || s;
+                  const sportName = s.name || (sports.find(sp => sp.id === sportId)?.name || 'Unknown');
+                  return (
+                    <option key={sportId} value={sportId}>{sportName}</option>
+                  );
+                })}
               </select>
+              {managerSports.length === 0 && sports.length > 0 && (
+                <div className="text-xs text-[#fbbf24] mt-1 col-span-4">
+                  ⚠️ You are not assigned to any sports. Please contact admin to get assigned to a sport.
+                </div>
+              )}
               <input
                 placeholder="Coach ID (optional)"
                 value={teamForm.coachId}
@@ -182,19 +211,31 @@ export default function ManagerDashboard() {
               />
               <button
                 onClick={async () => {
+                  if (!teamForm.name || !teamForm.sportId) {
+                    alert('Please fill in team name and select a sport');
+                    return;
+                  }
                   try {
                     const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
                     await createTeam({
                       name: teamForm.name,
-                      sportId: Number(teamForm.sportId),
-                      coachId: teamForm.coachId || null,
-                      managerId: currentUser.id || null,
+                      sport_id: Number(teamForm.sportId), // Use sport_id (backend expects this)
+                      coach_id: teamForm.coachId || null,
                     });
+                    // Refresh data to get updated team with sport
                     await fetchAllData();
                     setTeamForm({ name: "", sportId: "", coachId: "" });
                     alert('Team created successfully');
                   } catch (e) {
-                    setError(e?.response?.data?.detail || 'Failed to create team');
+                    console.error('Error creating team:', e);
+                    console.error('Error response:', e?.response?.data);
+                    const errorMsg = e?.response?.data?.detail || 
+                                   e?.response?.data?.sport_id?.[0] || 
+                                   e?.response?.data?.name?.[0] ||
+                                   JSON.stringify(e?.response?.data) ||
+                                   'Failed to create team';
+                    setError(errorMsg);
+                    alert(`Error: ${errorMsg}`);
                   }
                 }}
                 className="px-4 py-2 rounded bg-[#38bdf8] text-white"
@@ -211,7 +252,7 @@ export default function ManagerDashboard() {
                   <div>
                     <div className="font-medium text-white">{team.name}</div>
                     <div className="text-xs text-[#94a3b8]">
-                      {team.sport?.name || 'No sport'} • Coach: {team.coach?.user?.username || 'None'}
+                      Sport: {team.sport?.name || team.sport_id || 'No sport selected'} • Coach: {team.coach?.user?.username || team.coach?.username || 'None'}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -221,8 +262,17 @@ export default function ManagerDashboard() {
                           const details = await getTeamDetails(team.id);
                           setTeamDetails(details.data);
                           setSelectedTeam(team.id);
+                          // Refresh player profiles to ensure we have latest data
+                          try {
+                            const profiles = await listPlayerSportProfiles();
+                            const profilesData = profiles.data?.results || profiles.data || [];
+                            setPlayerProfiles(Array.isArray(profilesData) ? profilesData : []);
+                          } catch (e) {
+                            console.error('Failed to refresh player profiles:', e);
+                          }
                         } catch (e) {
                           setError('Failed to load team details');
+                          console.error('Error loading team details:', e);
                         }
                       }}
                       className="px-3 py-1 text-sm rounded border"
@@ -249,42 +299,65 @@ export default function ManagerDashboard() {
                   <div className="mt-3 p-3 bg-[#0f172a] rounded border border-[#334155]">
                     <div className="text-sm font-medium mb-2 text-white">Team Players</div>
                     <div className="space-y-2">
-                      {Array.isArray(playerProfiles) && playerProfiles.length > 0 ? (
-                        playerProfiles
-                          .filter(profile => {
-                            const profileTeamId = profile.team?.id || profile.team;
-                            const profileSportId = profile.sport?.id || profile.sport;
-                            const teamSportId = team.sport?.id || team.sport;
-                            return profileTeamId === team.id && profileSportId === teamSportId;
-                          })
-                          .map(profile => (
+                      {(() => {
+                        // Filter players for this team and sport
+                        const teamPlayers = Array.isArray(playerProfiles) ? playerProfiles.filter(profile => {
+                          const profileTeamId = profile.team?.id || profile.team;
+                          const profileSportId = profile.sport?.id || profile.sport;
+                          // Handle both object and ID formats for team sport
+                          const teamSportId = team.sport?.id || team.sport_id || team.sport;
+                          const matchesTeam = profileTeamId === team.id || Number(profileTeamId) === Number(team.id);
+                          const matchesSport = profileSportId === teamSportId || Number(profileSportId) === Number(teamSportId);
+                          return matchesTeam && matchesSport;
+                        }) : [];
+                        
+                        console.log('Team players filter:', {
+                          teamId: team.id,
+                          teamSportId: team.sport?.id || team.sport_id,
+                          totalProfiles: playerProfiles.length,
+                          filteredCount: teamPlayers.length,
+                          teamPlayers: teamPlayers.map(p => ({
+                            id: p.id,
+                            teamId: p.team?.id || p.team,
+                            sportId: p.sport?.id || p.sport,
+                            playerName: p.player?.user?.username
+                          }))
+                        });
+                        
+                        if (teamPlayers.length > 0) {
+                          return teamPlayers.map(profile => (
                             <div key={profile.id} className="flex items-center justify-between text-sm border-b border-[#334155] pb-2">
-                              <span className="text-white">{profile.player?.user?.username || profile.player?.username || `Player ${profile.player?.id || profile.player_id || 'Unknown'}`}</span>
+                              <span className="text-white">
+                                {profile.player?.user?.username || profile.player?.username || `Player ${profile.player?.id || profile.player_id || 'Unknown'}`}
+                              </span>
                               <button
                                 onClick={async () => {
                                   try {
-                                    await updatePlayerSportProfile(profile.id, { team: null });
-                                    await fetchAllData();
+                                    await updatePlayerSportProfile(profile.id, { team_id: null });
+                                    // Refresh player profiles
+                                    const profiles = await listPlayerSportProfiles();
+                                    const profilesData = profiles.data?.results || profiles.data || [];
+                                    setPlayerProfiles(Array.isArray(profilesData) ? profilesData : []);
                                     alert('Player removed from team');
                                   } catch (e) {
                                     setError(e?.response?.data?.detail || 'Failed to remove player');
+                                    console.error('Error removing player:', e);
                                   }
                                 }}
                                 className="text-xs text-[#ef4444] hover:underline"
                               >Remove</button>
                             </div>
-                          ))
-                      ) : (
-                        <div className="text-xs text-[#94a3b8]">Loading players...</div>
-                      )}
-                      {Array.isArray(playerProfiles) && playerProfiles.filter(p => {
-                        const pTeamId = p.team?.id || p.team;
-                        const pSportId = p.sport?.id || p.sport;
-                        const tSportId = team.sport?.id || team.sport;
-                        return pTeamId === team.id && pSportId === tSportId;
-                      }).length === 0 && (
-                        <div className="text-xs text-[#94a3b8]">No players in this team yet</div>
-                      )}
+                          ));
+                        } else {
+                          return (
+                            <div className="text-xs text-[#94a3b8]">
+                              {playerProfiles.length === 0 
+                                ? "Loading players..." 
+                                : `No players in this team yet. Add players using the dropdown below.`}
+                            </div>
+                          );
+                        }
+                      })()}
                     </div>
 
                     {/* Add player to team */}
@@ -297,21 +370,44 @@ export default function ManagerDashboard() {
                             const profileId = e.target.value;
                             if (!profileId) return;
                             try {
-                              await updatePlayerSportProfile(Number(profileId), { team: team.id });
+                              // Ensure team has sport, and profile matches that sport
+                              const teamSportId = team.sport?.id || team.sport_id || team.sport;
+                              const selectedProfile = playerProfiles.find(p => p.id === Number(profileId));
+                              if (!selectedProfile) {
+                                alert('Selected player profile not found');
+                                return;
+                              }
+                              const profileSportId = selectedProfile.sport?.id || selectedProfile.sport;
+                              if (teamSportId && profileSportId && teamSportId !== profileSportId) {
+                                alert(`Cannot add player: Team sport (${teamSportId}) doesn't match player sport (${profileSportId})`);
+                                return;
+                              }
+                              // Send team_id instead of team object
+                              await updatePlayerSportProfile(Number(profileId), { team_id: team.id });
                               await fetchAllData();
-                              alert('Player added to team');
+                              alert('Player added to team successfully');
                               e.target.value = '';
                             } catch (err) {
-                              setError(err?.response?.data?.detail || 'Failed to add player');
+                              console.error('Error adding player to team:', err);
+                              const errorMsg = err?.response?.data?.detail || err?.response?.data?.team?.[0] || 'Failed to add player';
+                              setError(errorMsg);
+                              alert(errorMsg);
                             }
                           }}
                         >
                           <option value="">Select player...</option>
                           {Array.isArray(playerProfiles) && playerProfiles
-                            .filter(p => p.sport?.id === team.sport?.id && (!p.team || p.team.id !== team.id))
+                            .filter(p => {
+                              // Handle both object and ID formats for sport
+                              const pSportId = p.sport?.id || p.sport;
+                              const tSportId = team.sport?.id || team.sport_id || team.sport;
+                              const pTeamId = p.team?.id || p.team;
+                              // Filter: same sport, and either no team or different team
+                              return pSportId === tSportId && (!pTeamId || pTeamId !== team.id);
+                            })
                             .map(p => (
                               <option key={p.id} value={p.id}>
-                                {p.player?.user?.username || `Player ${p.player?.id}`} ({p.sport?.name})
+                                {p.player?.user?.username || `Player ${p.player?.id}`} ({p.sport?.name || 'Unknown Sport'})
                               </option>
                             ))}
                         </select>
@@ -706,10 +802,26 @@ export default function ManagerDashboard() {
                                       getMatchPlayerStats(m.id)
                                     ]);
                                     setMatchState(state.data);
-                                    setMatchPlayerStats(stats.data || []);
+                                    const statsData = stats.data || [];
+                                    setMatchPlayerStats(statsData);
                                     setSelectedMatchForScoring(m.id);
+                                    console.log('Loaded match player stats for scoring:', {
+                                      matchId: m.id,
+                                      statsCount: statsData.length,
+                                      stats: statsData.map(s => ({
+                                        id: s.id,
+                                        playerId: s.player?.id,
+                                        playerName: s.player?.user?.username,
+                                        teamId: s.team?.id,
+                                        teamName: s.team?.name
+                                      }))
+                                    });
+                                    if (statsData.length === 0) {
+                                      alert('No players found for this match. Make sure the match has been started and teams have players assigned.');
+                                    }
                                   } catch (e) {
-                                    alert('Failed to load match state');
+                                    console.error('Failed to load match state:', e);
+                                    alert(e?.response?.data?.detail || 'Failed to load match state');
                                   }
                                 }}
                                 className="px-2 py-1 text-xs rounded bg-[#38bdf8] hover:bg-[#0ea5e9] text-white"
@@ -1063,6 +1175,35 @@ export default function ManagerDashboard() {
                             batting_first_team_id: Number(battingFirst)
                           });
                           setMatchState(result.data.state);
+                          // Wait a moment for backend to create MatchPlayerStats
+                          await new Promise(resolve => setTimeout(resolve, 500));
+                          // Load player stats after match starts
+                          try {
+                            const [state, stats] = await Promise.all([
+                              getMatchState(selectedMatchForScoring),
+                              getMatchPlayerStats(selectedMatchForScoring)
+                            ]);
+                            setMatchState(state.data);
+                            const statsData = stats.data || [];
+                            setMatchPlayerStats(statsData);
+                            console.log('Loaded match player stats after start:', {
+                              count: statsData.length,
+                              stats: statsData.map(s => ({
+                                id: s.id,
+                                playerId: s.player?.id,
+                                playerName: s.player?.user?.username || s.player?.player_id,
+                                teamId: s.team?.id,
+                                teamName: s.team?.name,
+                                battingTeamId: state.data?.current_batting_team?.id
+                              }))
+                            });
+                            if (statsData.length === 0) {
+                              alert('⚠️ No players found in teams. Make sure players are assigned to teams before starting the match.');
+                            }
+                          } catch (e) {
+                            console.error('Failed to load player stats:', e);
+                            alert('Match started but failed to load player stats. Please refresh.');
+                          }
                           await fetchAllData();
                           // Reload matches
                           const matches = await listTournamentMatches(match.tournament.id);
@@ -1105,6 +1246,26 @@ export default function ManagerDashboard() {
                     {!matchState.batsman1 || !matchState.batsman2 ? (
                       <div className="bg-[#0f172a] p-4 rounded-lg border border-[#334155]">
                         <div className="text-white font-semibold mb-2">Set Batsmen ({battingTeam?.name})</div>
+                        {matchPlayerStats.length === 0 && (
+                          <div className="text-xs text-[#fbbf24] mb-2">
+                            ⚠️ No players found. Make sure teams have players assigned and the match has been started.
+                            <button 
+                              onClick={async () => {
+                                try {
+                                  const stats = await getMatchPlayerStats(selectedMatchForScoring);
+                                  setMatchPlayerStats(stats.data || []);
+                                  console.log('Manually reloaded stats:', stats.data);
+                                } catch (e) {
+                                  console.error('Failed to reload:', e);
+                                  alert('Failed to reload player stats');
+                                }
+                              }}
+                              className="ml-2 text-blue-400 underline"
+                            >
+                              Reload Stats
+                            </button>
+                          </div>
+                        )}
                         <div className="grid grid-cols-2 gap-4">
                           <div>
                             <label className="block text-sm mb-1 text-[#94a3b8]">Batsman 1</label>
@@ -1113,9 +1274,40 @@ export default function ManagerDashboard() {
                               className="w-full p-2 border border-[#334155] rounded bg-[#1e293b] text-white"
                             >
                               <option value="">Select player</option>
-                              {matchPlayerStats.filter(s => s.team?.id === battingTeam?.id).map(s => (
-                                <option key={s.player?.id} value={s.player?.id}>{s.player?.user?.username || s.player?.player_id}</option>
-                              ))}
+                              {(() => {
+                                if (matchPlayerStats.length === 0) {
+                                  return <option value="" disabled>No players available - Teams may not have players assigned</option>;
+                                }
+                                const battingTeamPlayers = matchPlayerStats.filter(s => {
+                                  const statsTeamId = s.team?.id || s.team;
+                                  const battingTeamId = battingTeam?.id;
+                                  // Handle both object and ID comparisons
+                                  const matches = statsTeamId === battingTeamId || 
+                                                 Number(statsTeamId) === Number(battingTeamId) ||
+                                                 (statsTeamId && battingTeamId && String(statsTeamId) === String(battingTeamId));
+                                  return matches;
+                                });
+                                console.log('Batsman 1 filter:', {
+                                  totalStats: matchPlayerStats.length,
+                                  battingTeamId: battingTeam?.id,
+                                  battingTeamName: battingTeam?.name,
+                                  filteredCount: battingTeamPlayers.length,
+                                  allStats: matchPlayerStats.map(s => ({
+                                    teamId: s.team?.id,
+                                    teamName: s.team?.name,
+                                    playerId: s.player?.id,
+                                    playerName: s.player?.user?.username
+                                  }))
+                                });
+                                if (battingTeamPlayers.length === 0) {
+                                  return <option value="" disabled>No players found for {battingTeam?.name || 'this team'}</option>;
+                                }
+                                return battingTeamPlayers.map(s => (
+                                  <option key={s.player?.id || s.id} value={s.player?.id}>
+                                    {s.player?.user?.username || s.player?.player_id || `Player ${s.player?.id || 'Unknown'}`}
+                                  </option>
+                                ));
+                              })()}
                             </select>
                           </div>
                           <div>
@@ -1125,9 +1317,40 @@ export default function ManagerDashboard() {
                               className="w-full p-2 border border-[#334155] rounded bg-[#1e293b] text-white"
                             >
                               <option value="">Select player</option>
-                              {matchPlayerStats.filter(s => s.team?.id === battingTeam?.id).map(s => (
-                                <option key={s.player?.id} value={s.player?.id}>{s.player?.user?.username || s.player?.player_id}</option>
-                              ))}
+                              {(() => {
+                                if (matchPlayerStats.length === 0) {
+                                  return <option value="" disabled>No players available - Teams may not have players assigned</option>;
+                                }
+                                const battingTeamPlayers = matchPlayerStats.filter(s => {
+                                  const statsTeamId = s.team?.id || s.team;
+                                  const battingTeamId = battingTeam?.id;
+                                  // Handle both object and ID comparisons
+                                  const matches = statsTeamId === battingTeamId || 
+                                                 Number(statsTeamId) === Number(battingTeamId) ||
+                                                 (statsTeamId && battingTeamId && String(statsTeamId) === String(battingTeamId));
+                                  return matches;
+                                });
+                                console.log('Batsman 1 filter:', {
+                                  totalStats: matchPlayerStats.length,
+                                  battingTeamId: battingTeam?.id,
+                                  battingTeamName: battingTeam?.name,
+                                  filteredCount: battingTeamPlayers.length,
+                                  allStats: matchPlayerStats.map(s => ({
+                                    teamId: s.team?.id,
+                                    teamName: s.team?.name,
+                                    playerId: s.player?.id,
+                                    playerName: s.player?.user?.username
+                                  }))
+                                });
+                                if (battingTeamPlayers.length === 0) {
+                                  return <option value="" disabled>No players found for {battingTeam?.name || 'this team'}</option>;
+                                }
+                                return battingTeamPlayers.map(s => (
+                                  <option key={s.player?.id || s.id} value={s.player?.id}>
+                                    {s.player?.user?.username || s.player?.player_id || `Player ${s.player?.id || 'Unknown'}`}
+                                  </option>
+                                ));
+                              })()}
                             </select>
                           </div>
                         </div>
@@ -1164,9 +1387,19 @@ export default function ManagerDashboard() {
                               className="w-full p-2 border border-[#334155] rounded bg-[#1e293b] text-white mb-2"
                             >
                               <option value="">Select bowler</option>
-                              {matchPlayerStats.filter(s => s.team?.id === bowlingTeam?.id).map(s => (
-                                <option key={s.player?.id} value={s.player?.id}>{s.player?.user?.username || s.player?.player_id}</option>
-                              ))}
+                              {matchPlayerStats.length > 0 ? (
+                                matchPlayerStats.filter(s => {
+                                  const statsTeamId = s.team?.id || s.team;
+                                  const bowlingTeamId = bowlingTeam?.id;
+                                  return statsTeamId === bowlingTeamId;
+                                }).map(s => (
+                                  <option key={s.player?.id || s.id} value={s.player?.id}>
+                                    {s.player?.user?.username || s.player?.player_id || `Player ${s.player?.id || 'Unknown'}`}
+                                  </option>
+                                ))
+                              ) : (
+                                <option value="" disabled>No players available</option>
+                              )}
                             </select>
                             <button
                               onClick={async () => {

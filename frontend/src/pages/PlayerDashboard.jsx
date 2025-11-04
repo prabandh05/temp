@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
-import { listNotifications, acceptLinkRequest, rejectLinkRequest, listLinkRequests, listTournaments, listTournamentMatches, getPointsTable, getTournamentLeaderboard } from "../services/coach";
-import { Bell, CheckCircle, XCircle, Trophy, Calendar, Eye, EyeOff } from "lucide-react";
+import { listNotifications, acceptLinkRequest, rejectLinkRequest, listLinkRequests, listTournaments, listTournamentMatches, getPointsTable, getTournamentLeaderboard, getCoachesBySport, requestCoach, getSports } from "../services/coach";
+import { Bell, CheckCircle, XCircle, Trophy, Calendar, Eye, EyeOff, UserPlus, X } from "lucide-react";
 
 export default function PlayerDashboard() {
   const [loading, setLoading] = useState(true);
@@ -22,6 +22,17 @@ export default function PlayerDashboard() {
   const [tournaments, setTournaments] = useState([]);
   const [tournamentDetails, setTournamentDetails] = useState({});
   const [showTournamentDetails, setShowTournamentDetails] = useState({});
+  const [showApplyCoachModal, setShowApplyCoachModal] = useState(false);
+  const [availableCoaches, setAvailableCoaches] = useState([]);
+  const [loadingCoaches, setLoadingCoaches] = useState(false);
+  const [sports, setSports] = useState([]);
+
+  // Ensure availableCoaches is always an array when modal closes
+  useEffect(() => {
+    if (!showApplyCoachModal) {
+      setAvailableCoaches([]);
+    }
+  }, [showApplyCoachModal]);
 
   useEffect(() => {
     let mounted = true;
@@ -29,17 +40,20 @@ export default function PlayerDashboard() {
       setLoading(true);
       setError("");
       try {
-        const [resp, notifsRes, linksRes, tournamentsRes] = await Promise.all([
+        const [resp, notifsRes, linksRes, tournamentsRes, sportsRes] = await Promise.all([
           api.get("/api/dashboard/player/"),
           listNotifications().catch(() => ({ data: [] })),
           listLinkRequests().catch(() => ({ data: [] })),
-          listTournaments().catch(() => ({ data: [] })),
+          // Remove tournament call - players don't have permission, it causes 403 errors
+          Promise.resolve({ data: [] }),
+          getSports().catch(() => ({ data: [] })),
         ]);
         if (!mounted) return;
         const payload = resp.data;
         setData(payload);
         setNotifications(notifsRes.data || []);
         setLinkRequests(linksRes.data || []);
+        setSports(sportsRes.data || []);
         
         // Filter tournaments where player's teams are participating
         const playerTeams = payload.profiles?.map(p => p.team?.id).filter(Boolean) || [];
@@ -241,7 +255,7 @@ export default function PlayerDashboard() {
                     <div className="text-sm text-white mb-2">
                       {link.direction === 'coach_to_player' 
                         ? `Coach ${link.coach?.user?.username || link.coach?.username || 'Unknown'} invited you for ${link.sport?.name || 'sport'}`
-                        : `Player ${link.player?.user?.username || link.player?.username || 'Unknown'} requested you for ${link.sport?.name || 'sport'}`}
+                        : `Your application to Coach ${link.coach?.user?.username || link.coach?.username || 'Unknown'} for ${link.sport?.name || 'sport'} is pending`}
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -342,6 +356,102 @@ export default function PlayerDashboard() {
                 </div>
               </div>
             </div>
+            {/* Apply for Coach button - show when player has no coach for active sport */}
+            {activeProfile && !activeProfile.coach && activeSportName && (
+              <div className="bg-[#1e293b] border border-[#334155] rounded-xl p-4 space-y-3">
+                <div>
+                  <div className="text-sm font-semibold text-white mb-1">No Coach Assigned</div>
+                  <div className="text-xs text-[#94a3b8]">Apply to a coach for {activeSportName}</div>
+                </div>
+                <div className="flex gap-2">
+                  {/* Quick Demo Button - Auto-applies to first available coach */}
+                  <button
+                    onClick={async () => {
+                      try {
+                        // Find sport ID
+                        let sport = available.find(s => s.name === activeSportName);
+                        if (!sport) {
+                          sport = sports.find(s => s.name === activeSportName);
+                        }
+                        if (!sport) {
+                          sport = available.find(s => s.name?.toLowerCase() === activeSportName?.toLowerCase()) ||
+                                  sports.find(s => s.name?.toLowerCase() === activeSportName?.toLowerCase());
+                        }
+                        if (sport && sport.id) {
+                          // Get coaches for this sport
+                          const coachesRes = await getCoachesBySport(sport.id);
+                          const coachesData = Array.isArray(coachesRes.data) 
+                            ? coachesRes.data 
+                            : (coachesRes.data?.results || coachesRes.data?.data || []);
+                          
+                          if (coachesData.length > 0) {
+                            // Auto-apply to first available coach
+                            const firstCoach = coachesData[0];
+                            await requestCoach({ coachId: firstCoach.coach_id, sportId: sport.id });
+                            alert(`✅ Application sent to ${firstCoach.user?.username || 'coach'}!`);
+                            window.location.reload();
+                          } else {
+                            alert('No coaches available for this sport');
+                          }
+                        } else {
+                          alert(`Sport "${activeSportName}" not found.`);
+                        }
+                      } catch (e) {
+                        console.error('Error in quick apply:', e);
+                        alert(e?.response?.data?.detail || 'Failed to send application');
+                      }
+                    }}
+                    className="flex items-center gap-2 bg-[#10b981] hover:bg-[#059669] text-white font-semibold px-4 py-2 rounded-lg transition-colors flex-1"
+                  >
+                    <UserPlus size={18} />
+                    Quick Apply (Demo)
+                  </button>
+                  
+                  {/* Regular Button - Shows modal with coach list */}
+                  <button
+                    onClick={async () => {
+                      setShowApplyCoachModal(true);
+                      setLoadingCoaches(true);
+                      try {
+                        // Try to find sport from available sports first (from dashboard data)
+                        let sport = available.find(s => s.name === activeSportName);
+                        // If not found, try from the sports list
+                        if (!sport) {
+                          sport = sports.find(s => s.name === activeSportName);
+                        }
+                        // If still not found, try case-insensitive match
+                        if (!sport) {
+                          sport = available.find(s => s.name?.toLowerCase() === activeSportName?.toLowerCase()) ||
+                                  sports.find(s => s.name?.toLowerCase() === activeSportName?.toLowerCase());
+                        }
+                        if (sport && sport.id) {
+                          const coachesRes = await getCoachesBySport(sport.id);
+                          // Handle different response structures
+                          const coachesData = Array.isArray(coachesRes.data) 
+                            ? coachesRes.data 
+                            : (coachesRes.data?.results || coachesRes.data?.data || []);
+                          setAvailableCoaches(coachesData);
+                        } else {
+                          console.error('Sport not found:', activeSportName, 'Available:', available, 'Sports:', sports);
+                          alert(`Sport "${activeSportName}" not found. Please try again.`);
+                          setShowApplyCoachModal(false);
+                        }
+                      } catch (e) {
+                        console.error('Error loading coaches:', e);
+                        alert(e?.response?.data?.detail || 'Failed to load coaches');
+                      } finally {
+                        setLoadingCoaches(false);
+                      }
+                    }}
+                    className="flex items-center gap-2 bg-[#38bdf8] hover:bg-[#0ea5e9] text-white font-semibold px-4 py-2 rounded-lg transition-colors flex-1"
+                  >
+                    <UserPlus size={18} />
+                    Choose Coach
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Header: summary boxes */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="bg-[#1e293b] border border-[#334155] rounded-xl p-4">
@@ -640,6 +750,75 @@ export default function PlayerDashboard() {
           </div>
         </div>
       </div>
+
+      {/* Apply for Coach Modal */}
+      {showApplyCoachModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-70 z-50 flex justify-center items-center p-4" onClick={() => setShowApplyCoachModal(false)}>
+          <div className="bg-[#1e293b] border border-[#334155] rounded-xl shadow-xl w-full max-w-2xl max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold text-white">Apply for Coach</h3>
+                <button onClick={() => setShowApplyCoachModal(false)} className="text-[#94a3b8] hover:text-white transition-colors">
+                  <X size={24} />
+                </button>
+              </div>
+              <div className="text-sm text-[#94a3b8] mb-4">
+                Select a coach to apply for {activeSportName}
+              </div>
+              {loadingCoaches ? (
+                <div className="text-center py-8 text-[#94a3b8]">Loading coaches...</div>
+              ) : !Array.isArray(availableCoaches) || availableCoaches.length === 0 ? (
+                <div className="text-center py-8 text-[#94a3b8]">No coaches available for this sport</div>
+              ) : (
+                <div className="space-y-3">
+                  {availableCoaches.map((coach) => (
+                    <div key={coach.id} className="bg-[#0f172a] border border-[#334155] rounded-lg p-4 flex items-center justify-between">
+                      <div>
+                        <div className="font-semibold text-white">{coach.user?.username || 'Unknown'}</div>
+                        <div className="text-xs text-[#94a3b8]">Coach ID: {coach.coach_id}</div>
+                        {coach.experience > 0 && (
+                          <div className="text-xs text-[#94a3b8]">Experience: {coach.experience} years</div>
+                        )}
+                        {coach.specialization && (
+                          <div className="text-xs text-[#94a3b8]">Specialization: {coach.specialization}</div>
+                        )}
+                      </div>
+                      <button
+                        onClick={async () => {
+                          try {
+                            // Try to find sport from available sports first
+                            let sport = available.find(s => s.name === activeSportName);
+                            if (!sport) {
+                              sport = sports.find(s => s.name === activeSportName);
+                            }
+                            if (!sport) {
+                              sport = available.find(s => s.name?.toLowerCase() === activeSportName?.toLowerCase()) ||
+                                      sports.find(s => s.name?.toLowerCase() === activeSportName?.toLowerCase());
+                            }
+                            if (sport && sport.id) {
+                              await requestCoach({ coachId: coach.coach_id, sportId: sport.id });
+                              alert('Application sent successfully!');
+                              setShowApplyCoachModal(false);
+                              window.location.reload();
+                            } else {
+                              alert('Sport not found. Please try again.');
+                            }
+                          } catch (e) {
+                            alert(e?.response?.data?.detail || 'Failed to send application');
+                          }
+                        }}
+                        className="bg-[#38bdf8] hover:bg-[#0ea5e9] text-white font-semibold px-4 py-2 rounded-lg transition-colors"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

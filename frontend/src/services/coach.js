@@ -15,6 +15,11 @@ export const getSports = () => {
   return api.get('/api/sports/');
 };
 
+/** Get manager's assigned sports */
+export const getManagerSports = () => {
+  return api.get('/api/manager-sport-assignments/');
+};
+
 /**
  * Creates a new coaching session.
  * @param {{sport: number, title: string, notes: string}} sessionData - The data for the new session.
@@ -43,11 +48,9 @@ export const uploadSessionCsv = (sessionId, file) => {
   const formData = new FormData();
   formData.append('file', file);
 
-  return api.post(`/api/sessions/${sessionId}/upload-csv/`, formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
+  // Don't set Content-Type - let axios set it automatically with boundary for FormData
+  // The interceptor will automatically add the Authorization header
+  return api.post(`/api/sessions/${sessionId}/upload-csv/`, formData);
 };
 
 /** List coaching sessions */
@@ -61,9 +64,10 @@ export const endSession = (sessionId, file = null) => {
   if (file) {
     formData.append('file', file);
   }
-  return api.post(`/api/sessions/${sessionId}/end-session/`, formData, {
-    headers: file ? { 'Content-Type': 'multipart/form-data' } : {},
-  });
+  
+  // Don't set Content-Type - let axios set it automatically with boundary for FormData
+  // The interceptor will automatically add the Authorization header
+  return api.post(`/api/sessions/${sessionId}/end-session/`, formData);
 };
 
 /**
@@ -288,12 +292,15 @@ export const rejectPromotionRequest = (id, remarks) => {
 };
 
 /** Manager Team Management */
-export const createTeam = ({ name, sportId, coachId, managerId }) => {
+export const createTeam = ({ name, sport_id, sportId, coach_id, coachId, managerId }) => {
+  // Accept both sport_id and sportId for compatibility
+  const sportIdValue = sport_id || sportId;
+  const coachIdValue = coach_id || coachId;
   return api.post('/api/teams/', {
     name,
-    sport: sportId,
-    coach: coachId,
-    manager: managerId,
+    sport_id: sportIdValue, // Backend expects sport_id
+    coach_id: coachIdValue, // Backend expects coach_id
+    // managerId is handled automatically by backend based on logged-in user
   });
 };
 
@@ -326,4 +333,14 @@ export const getPlayerSportProfile = (profileId) => {
 /** Update PlayerSportProfile (assign/remove team) */
 export const updatePlayerSportProfile = (profileId, data) => {
   return api.patch(`/api/player-sport-profiles/${profileId}/`, data);
+};
+
+/** Get available coaches by sport (for players to apply) */
+export const getCoachesBySport = (sportId) => {
+  return api.get(`/api/coaches/?sport_id=${sportId}`);
+};
+
+/** Player requests to apply to a coach */
+export const requestCoach = ({ coachId, sportId }) => {
+  return api.post('/api/coach-player-links/request/', { coach_id: coachId, sport_id: sportId });
 };

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { PlusCircle, Users, ClipboardList, Download, Upload, FileText, AlertCircle, CheckCircle, X, UserPlus, FilePlus2, Trophy, Calendar, Eye, EyeOff } from 'lucide-react';
-import { getDashboardData, getSports, createSession, getSessionCsvTemplate, uploadSessionCsv, invitePlayer, createTeamProposal, listTeamProposals, listNotifications, acceptTeamAssignment, rejectTeamAssignment, listTeamAssignments, acceptLinkRequest, rejectLinkRequest, listLinkRequests, endSession, listSessions, listTournaments, listTournamentMatches, getPointsTable, getTournamentLeaderboard } from '../services/coach';
+import { getDashboardData, getSports, createSession, getSessionCsvTemplate, uploadSessionCsv, createTeamProposal, listTeamProposals, listNotifications, acceptTeamAssignment, rejectTeamAssignment, listTeamAssignments, acceptLinkRequest, rejectLinkRequest, listLinkRequests, endSession, listSessions, listTournaments, listTournamentMatches, getPointsTable, getTournamentLeaderboard } from '../services/coach';
 
 // Modal Component
 const Modal = ({ isOpen, onClose, children, title }) => {
@@ -36,8 +36,12 @@ export default function CoachDashboard() {
   const [uploadFile, setUploadFile] = useState(null);
   const [uploadResult, setUploadResult] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [showInviteModal, setShowInviteModal] = useState(false);
-  const [inviteForm, setInviteForm] = useState({ playerId: '', sportId: '' });
+  
+  // End session modal state
+  const [isEndSessionModalOpen, setEndSessionModalOpen] = useState(false);
+  const [endSessionFile, setEndSessionFile] = useState(null);
+  const [sessionToEnd, setSessionToEnd] = useState(null);
+  const [isEndingSession, setIsEndingSession] = useState(false);
   const [showProposalModal, setShowProposalModal] = useState(false);
   const [proposalForm, setProposalForm] = useState({ teamName: '', sportId: '', playerIds: '' });
   const [proposals, setProposals] = useState([]);
@@ -58,29 +62,54 @@ export default function CoachDashboard() {
         listTeamProposals().catch(() => ({ data: [] })),
         listNotifications().catch(() => ({ data: [] })),
         listTeamAssignments().catch(() => ({ data: [] })),
-        listLinkRequests().catch(() => ({ data: [] })),
+        listLinkRequests().catch((e) => {
+          console.error('Error loading link requests:', e);
+          console.error('Error details:', e?.response?.data, e?.response?.status);
+          return { data: [] };
+        }).then(res => {
+          // Debug: log the response
+          console.log('Link requests API response:', res);
+          console.log('Response data type:', typeof res?.data, 'Is array:', Array.isArray(res?.data));
+          console.log('Response data:', JSON.stringify(res?.data, null, 2));
+          return res;
+        }),
         listSessions().catch(() => ({ data: [] })),
-        listTournaments().catch(() => ({ data: [] }))
+        // Remove tournament call - coaches don't have permission, it causes 403 errors
+        Promise.resolve({ data: [] })
       ]);
       setDashboardData(dashRes.data);
       setSports(sportsRes.data);
       setProposals(propsRes.data || []);
       setNotifications(notifsRes.data || []);
       setTeamAssignments(assignsRes.data || []);
-      setLinkRequests(linksRes.data || []);
+      // Ensure linkRequests is always an array
+      // Handle different response structures (direct array or paginated)
+      let linkData = [];
+      if (Array.isArray(linksRes.data)) {
+        linkData = linksRes.data;
+      } else if (linksRes.data?.results) {
+        linkData = linksRes.data.results;
+      } else if (linksRes.data?.data) {
+        linkData = linksRes.data.data;
+      }
+      setLinkRequests(linkData);
+      const playerToCoachPending = linkData.filter(l => {
+        const dirMatch = (l.direction === 'player_to_coach' || String(l.direction).toLowerCase() === 'player_to_coach');
+        const statusMatch = (l.status === 'pending' || String(l.status).toLowerCase() === 'pending');
+        return dirMatch && statusMatch;
+      });
+      console.log('Link requests loaded:', {
+        count: linkData.length,
+        data: linkData,
+        rawResponse: linksRes.data,
+        playerToCoachRequests: playerToCoachPending,
+        allDirections: linkData.map(l => l.direction),
+        allStatuses: linkData.map(l => l.status)
+      });
       setSessions(sessionsRes.data || []);
       
-      // Filter tournaments where coach's teams are participating
-      const coachTeams = dashRes.data?.teams?.map(t => t.id) || [];
-      const allTournaments = tournamentsRes.data || [];
-      const relevantTournaments = allTournaments.filter(t => {
-        // Check if any of coach's teams are in this tournament
-        return coachTeams.some(teamId => 
-          t.teams?.some(tt => tt.team?.id === teamId) || 
-          t.teams_count > 0 // If we can't filter, show all for now
-        );
-      });
-      setTournaments(relevantTournaments);
+      // Tournaments are only accessible to managers/admins, so set empty array for coaches
+      setTournaments([]);
       
       setError('');
     } catch (err) {
@@ -102,12 +131,27 @@ export default function CoachDashboard() {
     
     try {
       const res = await createSession({
-        sport: parseInt(data.sport, 10),
+        sport_id: parseInt(data.sport, 10),
         title: data.title,
         notes: data.notes,
       });
-      // Add session to state with its new ID and the form data
-      setSessions(prev => [{ id: res.data.id, ...data, sport: sports.find(s => s.id === parseInt(data.sport))?.name || 'Unknown Sport' }, ...prev]);
+      // Refetch sessions to get the full session data with proper sport object
+      try {
+        const sessionsRes = await listSessions();
+        setSessions(sessionsRes.data || []);
+      } catch (e) {
+        console.error('Failed to refresh sessions:', e);
+        // Fallback: add session with sport object (not string)
+        const sportObj = sports.find(s => s.id === parseInt(data.sport));
+        setSessions(prev => [{ 
+          id: res.data.id, 
+          title: data.title,
+          notes: data.notes,
+          sport: sportObj || null,
+          is_active: true,
+          session_date: new Date().toISOString()
+        }, ...prev]);
+      }
       setCreateModalOpen(false);
     } catch (err) {
       console.error("Failed to create session:", err);
@@ -153,6 +197,35 @@ export default function CoachDashboard() {
     setUploadFile(null);
     setUploadResult(null);
     setUploadModalOpen(true);
+  };
+
+  const openEndSessionModal = (session) => {
+    setSessionToEnd(session);
+    setEndSessionFile(null);
+    setEndSessionModalOpen(true);
+  };
+
+  const handleEndSessionWithCsv = async () => {
+    if (!endSessionFile || !sessionToEnd) {
+      alert('Please select a CSV file to end the session');
+      return;
+    }
+    
+    setIsEndingSession(true);
+    try {
+      const result = await endSession(sessionToEnd.id, endSessionFile);
+      alert(`✅ Session ended successfully!\n\nSummary:\n- Total Players: ${result.data.summary?.total_players || 'N/A'}\n- Attended: ${result.data.summary?.attended || 'N/A'}\n- Absent: ${result.data.summary?.absent || 'N/A'}\n- Average Rating: ${result.data.summary?.average_rating || 'N/A'}`);
+      setEndSessionModalOpen(false);
+      setEndSessionFile(null);
+      setSessionToEnd(null);
+      await fetchData(); // Refresh all data
+    } catch (e) {
+      console.error('Failed to end session:', e);
+      const errorMsg = e?.response?.data?.detail || 'Failed to end session. Please check your CSV file format.';
+      alert(`❌ Error: ${errorMsg}`);
+    } finally {
+      setIsEndingSession(false);
+    }
   };
 
   if (isLoading) {
@@ -212,14 +285,26 @@ export default function CoachDashboard() {
         {/* Quick Actions */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <button
-            onClick={() => setShowInviteModal(true)}
-            className="bg-[#1e293b] p-4 rounded-2xl border border-[#334155] hover:border-[#38bdf8] transition-colors flex items-center gap-3"
+            onClick={() => setShowNotifications(true)}
+            className="bg-[#1e293b] p-4 rounded-2xl border border-[#334155] hover:border-[#38bdf8] transition-colors flex items-center gap-3 relative"
           >
             <UserPlus className="text-[#38bdf8]" size={24} />
             <div className="text-left">
-              <div className="font-semibold text-white">Invite Player</div>
-              <div className="text-xs text-[#94a3b8]">Add student to your roster</div>
+              <div className="font-semibold text-white">Application Requests</div>
+              <div className="text-xs text-[#94a3b8]">View player applications</div>
             </div>
+            {(() => {
+              const pendingCount = linkRequests.filter(l => {
+                const dirMatch = (l.direction === 'player_to_coach' || String(l.direction).toLowerCase() === 'player_to_coach');
+                const statusMatch = (l.status === 'pending' || String(l.status).toLowerCase() === 'pending');
+                return dirMatch && statusMatch;
+              }).length;
+              return pendingCount > 0 && (
+                <span className="absolute top-2 right-2 w-5 h-5 bg-[#38bdf8] rounded-full flex items-center justify-center text-xs font-bold text-white">
+                  {pendingCount}
+                </span>
+              );
+            })()}
           </button>
           <button
             onClick={() => setShowProposalModal(true)}
@@ -260,7 +345,7 @@ export default function CoachDashboard() {
                         <span className="px-2 py-1 text-xs rounded bg-[#94a3b8] text-white">Ended</span>
                       )}
                     </div>
-                    <p className="text-sm text-[#94a3b8]">{session.sport} - Notes: {session.notes || 'N/A'}</p>
+                    <p className="text-sm text-[#94a3b8]">{(typeof session.sport === 'string' ? session.sport : session.sport?.name) || 'Unknown Sport'} - Notes: {session.notes || 'N/A'}</p>
                     {session.session_date && (
                       <p className="text-xs text-[#94a3b8] mt-1">Date: {new Date(session.session_date).toLocaleString()}</p>
                     )}
@@ -275,17 +360,7 @@ export default function CoachDashboard() {
                           <Upload size={16} /> Upload
                         </button>
                         <button 
-                          onClick={async () => {
-                            if (window.confirm('Are you sure you want to end this session? This will mark it as inactive.')) {
-                              try {
-                                const result = await endSession(session.id);
-                                alert(`Session ended successfully!\n\nSummary:\n- Total Players: ${result.data.summary.total_players}\n- Attended: ${result.data.summary.attended}\n- Absent: ${result.data.summary.absent}\n- Average Rating: ${result.data.summary.average_rating}`);
-                                fetchData();
-                              } catch (e) {
-                                alert(e?.response?.data?.detail || 'Failed to end session');
-                              }
-                            }
-                          }}
+                          onClick={() => openEndSessionModal(session)}
                           className="flex items-center gap-2 text-sm bg-[#ef4444] hover:bg-[#dc2626] text-white py-2 px-3 rounded-md transition-colors"
                         >
                           <X size={16} /> End Session
@@ -314,49 +389,78 @@ export default function CoachDashboard() {
           </div>
           <div className="p-4 space-y-3">
             {/* Player Link Requests (Player requested coach) */}
-            {linkRequests.filter(l => l.direction === 'player_to_coach' && l.status === 'pending').length > 0 && (
-              <div>
-                <div className="text-xs font-semibold text-[#94a3b8] mb-2">Player Requests</div>
-                {linkRequests.filter(l => l.direction === 'player_to_coach' && l.status === 'pending').map(link => (
-                  <div key={link.id} className="bg-[#0f172a] border border-[#334155] rounded-lg p-3 mb-2">
-                    <div className="text-sm text-white mb-2">
-                      Player <strong>{link.player?.user?.username || link.player?.username || 'Unknown'}</strong> requested you for <strong>{link.sport?.name || 'sport'}</strong>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={async () => {
-                          try {
-                            await acceptLinkRequest(link.id);
-                            setLinkRequests(linkRequests.filter(l => l.id !== link.id));
-                            alert('Request accepted!');
-                            fetchData();
-                          } catch (e) {
-                            alert(e?.response?.data?.detail || 'Failed to accept');
-                          }
-                        }}
-                        className="flex-1 px-3 py-1 bg-[#10b981] hover:bg-[#059669] text-white rounded text-sm transition-colors"
-                      >
-                        Accept
-                      </button>
-                      <button
-                        onClick={async () => {
-                          try {
-                            await rejectLinkRequest(link.id);
-                            setLinkRequests(linkRequests.filter(l => l.id !== link.id));
-                            alert('Request rejected');
-                          } catch (e) {
-                            alert(e?.response?.data?.detail || 'Failed to reject');
-                          }
-                        }}
-                        className="flex-1 px-3 py-1 bg-[#ef4444] hover:bg-[#dc2626] text-white rounded text-sm transition-colors"
-                      >
-                        Reject
-                      </button>
-                    </div>
+            {(() => {
+              console.log('Notifications panel - All linkRequests:', linkRequests);
+              const playerRequests = linkRequests.filter(l => {
+                // Handle case-insensitive matching and different formats
+                const directionMatch = (l.direction === 'player_to_coach' || 
+                                        l.direction === 'PLAYER_TO_COACH' ||
+                                        String(l.direction).toLowerCase() === 'player_to_coach');
+                const statusMatch = (l.status === 'pending' || 
+                                    l.status === 'PENDING' ||
+                                    String(l.status).toLowerCase() === 'pending');
+                const matches = directionMatch && statusMatch;
+                console.log('Checking link:', l.id, 'direction:', l.direction, 'status:', l.status, 'matches:', matches);
+                return matches;
+              });
+              console.log('Filtered playerRequests:', playerRequests);
+              if (playerRequests.length === 0) {
+                return (
+                  <div className="text-sm text-[#94a3b8] text-center py-4">
+                    No pending application requests
+                    {linkRequests.length > 0 && (
+                      <div className="text-xs mt-2">(Found {linkRequests.length} total requests, but none match filter)</div>
+                    )}
                   </div>
-                ))}
-              </div>
-            )}
+                );
+              }
+              return (
+                <div>
+                  <div className="text-xs font-semibold text-[#94a3b8] mb-2">Player Requests ({playerRequests.length})</div>
+                  {playerRequests.map(link => (
+                    <div key={link.id} className="bg-[#0f172a] border border-[#334155] rounded-lg p-3 mb-2">
+                      <div className="text-sm text-white mb-2">
+                        Player <strong>{link.player?.user?.username || link.player?.username || 'Unknown'}</strong> requested you for <strong>{link.sport?.name || 'sport'}</strong>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={async () => {
+                            try {
+                              await acceptLinkRequest(link.id);
+                              // Remove from local state immediately
+                              setLinkRequests(linkRequests.filter(l => l.id !== link.id));
+                              alert('Request accepted! Player is now your student.');
+                              // Refresh all data to update dashboard
+                              await fetchData();
+                            } catch (e) {
+                              console.error('Error accepting request:', e);
+                              alert(e?.response?.data?.detail || 'Failed to accept');
+                            }
+                          }}
+                          className="flex-1 px-3 py-1 bg-[#10b981] hover:bg-[#059669] text-white rounded text-sm transition-colors"
+                        >
+                          Accept
+                        </button>
+                        <button
+                          onClick={async () => {
+                            try {
+                              await rejectLinkRequest(link.id);
+                              setLinkRequests(linkRequests.filter(l => l.id !== link.id));
+                              alert('Request rejected');
+                            } catch (e) {
+                              alert(e?.response?.data?.detail || 'Failed to reject');
+                            }
+                          }}
+                          className="flex-1 px-3 py-1 bg-[#ef4444] hover:bg-[#dc2626] text-white rounded text-sm transition-colors"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             {/* Team Assignment Requests */}
             {teamAssignments.filter(a => a.status === 'pending').length > 0 && (
               <div>
@@ -489,46 +593,6 @@ export default function CoachDashboard() {
         </div>
       </Modal>
 
-      {/* Invite Player Modal */}
-      <Modal isOpen={showInviteModal} onClose={() => setShowInviteModal(false)} title="Invite Player">
-        <form onSubmit={async (e) => {
-          e.preventDefault();
-          try {
-            await invitePlayer({ playerId: inviteForm.playerId, sportId: Number(inviteForm.sportId) });
-            alert('Invitation sent');
-            setInviteForm({ playerId: '', sportId: '' });
-            setShowInviteModal(false);
-            fetchData();
-          } catch (err) {
-            alert(err?.response?.data?.detail || 'Failed to invite');
-          }
-        }} className="space-y-4">
-          <div>
-            <label className="block text-sm text-[#94a3b8] mb-1">Sport</label>
-            <select
-              value={inviteForm.sportId}
-              onChange={(e) => setInviteForm(v => ({ ...v, sportId: e.target.value }))}
-              required
-              className="w-full p-2 bg-[#171717] border border-[#334155] rounded-lg"
-            >
-              <option value="">Select sport</option>
-              {sports.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm text-[#94a3b8] mb-1">Player ID</label>
-            <input
-              type="text"
-              value={inviteForm.playerId}
-              onChange={(e) => setInviteForm(v => ({ ...v, playerId: e.target.value }))}
-              placeholder="e.g., P2500001"
-              required
-              className="w-full p-2 bg-[#171717] border border-[#334155] rounded-lg"
-            />
-          </div>
-          <button type="submit" className="w-full bg-[#38bdf8] text-white font-bold p-2 rounded-lg">Send Invitation</button>
-        </form>
-      </Modal>
 
       {/* Team Proposal Modal */}
       <Modal isOpen={showProposalModal} onClose={() => setShowProposalModal(false)} title="Create Team Proposal">
@@ -666,7 +730,8 @@ export default function CoachDashboard() {
         </div>
       </div>
 
-      {/* Tournaments Section */}
+      {/* Tournaments Section - Only show if there are tournaments (coaches typically don't have access) */}
+      {tournaments.length > 0 && (
       <div className="bg-[#1e293b] p-6 rounded-2xl border border-[#334155] mt-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-2xl font-bold text-white flex items-center gap-2">
@@ -674,8 +739,7 @@ export default function CoachDashboard() {
           </h2>
         </div>
         <div className="space-y-3">
-          {tournaments.length > 0 ? (
-            tournaments.map(tournament => (
+          {tournaments.map(tournament => (
               <div key={tournament.id} className="bg-[#0f172a] border border-[#334155] p-4 rounded-lg">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex-1">
@@ -787,12 +851,82 @@ export default function CoachDashboard() {
                   </div>
                 )}
               </div>
-            ))
-          ) : (
-            <div className="text-sm text-[#94a3b8] text-center py-4">No tournaments found for your teams</div>
-          )}
+            ))}
         </div>
       </div>
+      )}
+
+      {/* End Session Modal - Requires CSV upload */}
+      <Modal isOpen={isEndSessionModalOpen} onClose={() => {
+        setEndSessionModalOpen(false);
+        setEndSessionFile(null);
+        setSessionToEnd(null);
+      }} title={`End Session: "${sessionToEnd?.title}"`}>
+        <div className="space-y-4">
+          <p className="text-sm text-[#94a3b8]">
+            To end this session, please upload the attendance CSV file. The session will be ended automatically after the CSV is verified.
+          </p>
+          <p className="text-xs text-[#94a3b8] bg-[#0f172a] p-2 rounded">
+            <strong>CSV Format:</strong> <code className="bg-[#171717] px-1 rounded">player_id,attended,score</code><br/>
+            Ensure the file follows the template format exactly.
+          </p>
+          
+          <div>
+            <label htmlFor="endSessionCsvFile" className="w-full cursor-pointer border-2 border-dashed border-[#334155] rounded-lg p-6 flex flex-col items-center justify-center hover:border-[#ef4444] transition-colors">
+              <Upload size={32} className="text-[#94a3b8] mb-2" />
+              <span className="text-white font-semibold">{endSessionFile ? endSessionFile.name : 'Click to select CSV file'}</span>
+              <span className="text-xs text-[#94a3b8] mt-1">CSV file required</span>
+            </label>
+            <input 
+              type="file" 
+              id="endSessionCsvFile" 
+              accept=".csv" 
+              onChange={(e) => setEndSessionFile(e.target.files?.[0] || null)} 
+              className="hidden" 
+            />
+          </div>
+
+          {sessionToEnd && (
+            <div className="flex gap-2">
+              <button
+                onClick={handleDownloadTemplate.bind(null, sessionToEnd.id)}
+                className="flex-1 flex items-center justify-center gap-2 text-sm bg-[#2F2F2F] hover:bg-[#404040] text-white py-2 px-3 rounded-md transition-colors"
+              >
+                <Download size={16} /> Download Template
+              </button>
+            </div>
+          )}
+
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={() => {
+                setEndSessionModalOpen(false);
+                setEndSessionFile(null);
+                setSessionToEnd(null);
+              }}
+              className="flex-1 bg-[#334155] hover:bg-[#475569] text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+              disabled={isEndingSession}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleEndSessionWithCsv}
+              disabled={!endSessionFile || isEndingSession}
+              className="flex-1 bg-[#ef4444] hover:bg-[#dc2626] disabled:bg-[#334155] disabled:cursor-not-allowed text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+            >
+              {isEndingSession ? (
+                <>
+                  <span className="animate-spin">⏳</span> Ending Session...
+                </>
+              ) : (
+                <>
+                  <X size={16} /> End Session
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

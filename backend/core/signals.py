@@ -5,7 +5,8 @@ from django.db import transaction
 from django.db.models import Max
 import datetime
 
-from .models import User, Player, Coach, Manager, Admin, PlayerSportProfile, CricketStats
+from .models import User, Player, Coach, Manager, Admin, PlayerSportProfile, CricketStats, Sport, ManagerSport
+from .utils import generate_coach_id
 
 
 def _next_player_id():
@@ -61,8 +62,34 @@ def create_or_update_coach(sender, instance, created, **kwargs):
         with transaction.atomic():
             # Create only if not already existing
             if not hasattr(instance, "coach"):
-                Coach.objects.create(user=instance)
-                print(f"✅ Auto-created coach for {instance.username}")
+                coach_id = generate_coach_id()
+                Coach.objects.create(user=instance, coach_id=coach_id)
+                print(f"✅ Auto-created coach for {instance.username} with ID {coach_id}")
+            elif not instance.coach.coach_id:
+                instance.coach.coach_id = generate_coach_id()
+                instance.coach.save()
+                print(f"🛠️ Added missing coach_id for {instance.username}")
+
+
+@receiver(post_save, sender=Manager)
+def auto_assign_manager_to_all_sports(sender, instance, created, **kwargs):
+    """Auto-assign manager to all sports when Manager is created."""
+    if created:
+        # Get all sports
+        all_sports = Sport.objects.all()
+        if all_sports.exists():
+            # Try to get an admin user, or use the manager's user if no admin
+            admin_user = User.objects.filter(role=User.Roles.ADMIN).first() or instance.user
+            # Assign manager to all sports
+            for sport in all_sports:
+                ManagerSport.objects.get_or_create(
+                    manager=instance,
+                    sport=sport,
+                    defaults={"assigned_by": admin_user}
+                )
+            print(f"✅ Auto-assigned manager {instance.user.username} to {all_sports.count()} sports")
+        else:
+            print(f"⚠️ No sports found - manager {instance.user.username} will be assigned when sports are created")
 
 
 @receiver(post_save, sender=User)
@@ -79,6 +106,7 @@ def create_or_update_manager(sender, instance, created, **kwargs):
             if not hasattr(instance, "manager"):
                 Manager.objects.create(user=instance)
                 print(f"✅ Auto-created manager for {instance.username}")
+                # Auto-assignment to sports happens in the Manager post_save signal
 
 
 @receiver(post_save, sender=User)

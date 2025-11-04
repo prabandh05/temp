@@ -14,12 +14,13 @@ function App() {
   return (
     <Router>
       <Routes>
+        {/* Public Routes */}
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
+        <Route path="/" element={<Home />} />
         
         {/* Protected Routes */}
         <Route element={<PrivateRoute />}>
-          <Route path="/" element={<Home />} />
           <Route path="/player-dashboard" element={<PlayerDashboard />} />
           <Route path="/coach-dashboard" element={<CoachDashboard />} />
           <Route path="/manager-dashboard" element={<ManagerDashboard />} />
