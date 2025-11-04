@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     Player, Coach, Team, Match, Attendance, Leaderboard, User,
-    Manager, ManagerSport, TeamProposal, TeamAssignmentRequest,
+    Manager, Admin, ManagerSport, TeamProposal, TeamAssignmentRequest,
     Tournament, TournamentTeam, TournamentMatch, Sport, PromotionRequest,
     CoachPlayerLinkRequest, Notification
 )
@@ -67,6 +67,12 @@ class LeaderboardAdmin(admin.ModelAdmin):
 class ManagerAdmin(admin.ModelAdmin):
     list_display = ('id', 'user', 'manager_id', 'created_at')
     search_fields = ('user__username', 'manager_id')
+
+
+@admin.register(Admin)
+class AdminProfileAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'admin_id', 'created_at')
+    search_fields = ('user__username', 'admin_id')
 
 
 @admin.register(ManagerSport)

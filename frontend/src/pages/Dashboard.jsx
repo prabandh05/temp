@@ -6,18 +6,18 @@ function Dashboard() {
   const navigate = useNavigate();
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
-      <h1 className="text-3xl font-bold mb-6">Welcome to Sports Portal</h1>
+    <div className="flex flex-col items-center justify-center min-h-screen bg-[#0f172a]">
+      <h1 className="text-3xl font-bold mb-6 text-white">Welcome to Sports Portal</h1>
       <div className="flex space-x-4">
         <button
           onClick={() => navigate("/login")}
-          className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700"
+          className="bg-gradient-to-r from-[#38bdf8] to-[#0ea5e9] text-white px-6 py-2 rounded-lg hover:from-[#0ea5e9] hover:to-[#0284c7] transition-all duration-300"
         >
           Login
         </button>
         <button
           onClick={() => navigate("/signup")}
-          className="bg-green-600 text-white px-6 py-2 rounded-md hover:bg-green-700"
+          className="bg-gradient-to-r from-[#10b981] to-[#059669] text-white px-6 py-2 rounded-lg hover:from-[#059669] hover:to-[#047857] transition-all duration-300"
         >
           Signup
         </button>

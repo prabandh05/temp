@@ -43,7 +43,7 @@ for user in latest_users:
         try:
             coach = user.coach
             print(f"   ✅ Coach instance exists")
-            print(f"   Experience: {coach.experience_years} years")
+            print(f"   Experience: {coach.experience} years")
         except Coach.DoesNotExist:
             print(f"   ❌ Coach instance not found!")
     

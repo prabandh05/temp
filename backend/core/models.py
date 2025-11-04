@@ -330,6 +330,10 @@ class CoachingSession(models.Model):
     session_date = models.DateTimeField(default=timezone.now)
     title = models.CharField(max_length=120, blank=True, null=True)
     notes = models.TextField(blank=True, null=True)
+    is_active = models.BooleanField(default=True, help_text="True if session is ongoing, False if ended")
+
+    class Meta:
+        ordering = ["-session_date"]
 
     def __str__(self):
         return f"{getattr(self.coach.user, 'username', 'Coach')} session on {self.session_date.date()}"
@@ -428,6 +432,26 @@ class Manager(models.Model):
             current_year = str(datetime.date.today().year)[-2:]
             count = Manager.objects.count() + 1
             self.manager_id = f"M{current_year}{count:05d}"
+        super().save(*args, **kwargs)
+
+
+# -----------------------------
+# Admin Model
+# -----------------------------
+class Admin(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="admin_profile")
+    admin_id = models.CharField(max_length=10, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    def __str__(self):
+        return f"{getattr(self.user, 'username', 'Admin')}"
+
+    def save(self, *args, **kwargs):
+        if not self.admin_id:
+            # Generate admin ID: AYYNNNNN
+            current_year = str(datetime.date.today().year)[-2:]
+            count = Admin.objects.count() + 1
+            self.admin_id = f"A{current_year}{count:05d}"
         super().save(*args, **kwargs)
 
 

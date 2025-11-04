@@ -8,16 +8,18 @@ from io import StringIO
 from .models import (
     PromotionRequest, Player, Sport, CoachingSession, PlayerSportProfile, SessionAttendance,
     CoachPlayerLinkRequest, Leaderboard, Notification, Manager, ManagerSport, TeamProposal,
-    TeamAssignmentRequest, Tournament, TournamentTeam, TournamentMatch
+    TeamAssignmentRequest, Tournament, TournamentTeam, TournamentMatch, Team
 )
+from django.utils import timezone
 from .serializers import (
     PromotionRequestCreateSerializer, PromotionRequestSerializer,
     CoachingSessionCreateSerializer, CoachInviteSerializer, PlayerRequestCoachSerializer,
     CoachPlayerLinkRequestSerializer, LeaderboardSerializer, NotificationSerializer,
     SportSerializer, TeamProposalCreateSerializer, TeamProposalSerializer,
     TeamAssignmentRequestCreateSerializer, TeamAssignmentRequestSerializer,
-    TournamentCreateSerializer, TournamentSerializer, TournamentTeamSerializer, TournamentMatchSerializer,
-    ManagerSportSerializer,
+    TournamentCreateSerializer, TournamentSerializer, TournamentTeamSerializer, 
+    TournamentMatchCreateSerializer, TournamentMatchSerializer,
+    ManagerSportSerializer, PlayerSportProfileSerializer, PlayerSportProfileUpdateSerializer,
 )
 from .permissions import IsAuthenticatedAndPlayer, IsAuthenticatedAndManagerOrAdmin, IsAuthenticatedAndCoach
 from .promotion_services import (
@@ -83,6 +85,12 @@ class CoachingSessionViewSet(viewsets.GenericViewSet):
     serializer_class = CoachingSessionCreateSerializer
     permission_classes = [IsAuthenticatedAndCoach]
 
+    def list(self, request):
+        """List sessions for the current coach."""
+        qs = self.get_queryset().filter(coach=request.user.coach).order_by("-session_date")
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
     def create(self, request):
         serializer = CoachingSessionCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
@@ -108,12 +116,17 @@ class CoachingSessionViewSet(viewsets.GenericViewSet):
         )
 
         output = StringIO()
-        writer = csv.writer(output)
+        writer = csv.writer(output, lineterminator='\n')  # Use Unix line endings for consistency
         writer.writerow(["player_id", "attended", "score"])  # attended: 0/1, score: 1-10
         for p in profiles:
             writer.writerow([p.player.player_id, 0, 0])
         data = output.getvalue()
-        return Response(data, headers={"Content-Type": "text/csv"})
+        # Ensure proper CSV format with UTF-8 BOM for Excel compatibility
+        response = Response(data, headers={
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": f'attachment; filename="session_{pk}_template.csv"'
+        })
+        return response
 
     @action(detail=True, methods=["post"], url_path="upload-csv")
     def upload_csv(self, request, pk=None):
@@ -203,6 +216,7 @@ class CoachingSessionViewSet(viewsets.GenericViewSet):
 class CoachPlayerLinkViewSet(viewsets.GenericViewSet):
     queryset = CoachPlayerLinkRequest.objects.select_related("coach__user", "player__user", "sport")
     permission_classes = [IsAuthenticated]
+    serializer_class = CoachPlayerLinkRequestSerializer
 
     def get_permissions(self):
         if self.action in {"invite"}:
@@ -210,6 +224,20 @@ class CoachPlayerLinkViewSet(viewsets.GenericViewSet):
         if self.action in {"request_coach"}:
             return [IsAuthenticatedAndPlayer()]
         return super().get_permissions()
+
+    def list(self, request):
+        """List link requests for current user."""
+        qs = self.get_queryset()
+        if request.user.role == User.Roles.PLAYER:
+            qs = qs.filter(player__user=request.user, status="pending")
+        elif request.user.role == User.Roles.COACH:
+            qs = qs.filter(coach__user=request.user, status="pending")
+        elif request.user.role == User.Roles.ADMIN:
+            qs = qs.filter(status="pending")
+        else:
+            qs = qs.none()
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
 
     @action(detail=False, methods=["post"], url_path="invite")
     def invite(self, request):
@@ -227,8 +255,17 @@ class CoachPlayerLinkViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="accept")
     def accept(self, request, pk=None):
+        """Accept link request. Admin can bypass."""
         try:
             link = self.get_queryset().get(pk=pk)
+            # Allow admin or the appropriate party
+            if request.user.role != User.Roles.ADMIN:
+                if link.direction == CoachPlayerLinkRequest.Direction.COACH_TO_PLAYER:
+                    if not hasattr(request.user, "player") or request.user.player.id != link.player.id:
+                        return Response({"detail": "Only the invited player or admin can accept"}, status=status.HTTP_403_FORBIDDEN)
+                else:
+                    if not hasattr(request.user, "coach") or request.user.coach.id != link.coach.id:
+                        return Response({"detail": "Only the invited coach or admin can accept"}, status=status.HTTP_403_FORBIDDEN)
             psp = accept_link_request(link, acting_user=request.user)
         except CoachPlayerLinkRequest.DoesNotExist:
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -401,13 +438,27 @@ def role_required(allowed_roles):
 
 # ------------------ TEAM ------------------
 class TeamViewSet(viewsets.ModelViewSet):
-    queryset = Team.objects.all()
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    queryset = Team.objects.select_related("coach__user", "manager", "sport")
+    permission_classes = [IsAuthenticated]
 
     def get_serializer_class(self):
         if self.action in ("create", "update", "partial_update"):
             return TeamCreateSerializer
         return TeamSerializer
+    
+    def get_permissions(self):
+        if self.action in ("create", "update", "partial_update", "destroy"):
+            return [IsAuthenticatedAndManagerOrAdmin()]
+        return super().get_permissions()
+    
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.role == User.Roles.MANAGER:
+            qs = qs.filter(manager=user)
+        elif user.role == User.Roles.COACH:
+            qs = qs.filter(coach__user=user)
+        return qs
 
 # ------------------ PLAYER ------------------
 class PlayerViewSet(viewsets.ModelViewSet):
@@ -818,18 +869,99 @@ def coach_dashboard(request):
     except Coach.DoesNotExist:
         return Response({"detail": "Coach profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    teams = Team.objects.filter(coach=coach)
-    players = Player.objects.filter(coach=coach).select_related("user", "team")
+    # Get teams assigned to this coach
+    teams = Team.objects.filter(coach=coach).select_related("sport", "manager")
+    
+    # Get students (players linked via PlayerSportProfile)
+    student_profiles = PlayerSportProfile.objects.filter(
+        coach=coach,
+        is_active=True
+    ).select_related("player__user", "sport", "team").prefetch_related("player__achievements")
+    
+    # Group players by player (since a player can have multiple profiles for different sports)
+    players_dict = {}
+    for profile in student_profiles:
+        player = profile.player
+        if player.id not in players_dict:
+            players_dict[player.id] = {
+                "id": player.id,
+                "user_id": player.user.id,
+                "player_id": player.player_id,
+                "user": {
+                    "id": player.user.id,
+                    "username": player.user.username,
+                    "email": player.user.email,
+                },
+                "profiles": []
+            }
+        
+        # Add profile data
+        profile_data = {
+            "id": profile.id,
+            "sport": {
+                "id": profile.sport.id if profile.sport else None,
+                "name": profile.sport.name if profile.sport else None,
+                "sport_type": profile.sport.sport_type if profile.sport else None,
+            },
+            "team": {
+                "id": profile.team.id if profile.team else None,
+                "name": profile.team.name if profile.team else None,
+            } if profile.team else None,
+            "is_active": profile.is_active,
+            "joined_date": profile.joined_date,
+            "career_score": profile.career_score,
+        }
+        
+        # Add sport-specific stats if available
+        if profile.sport:
+            sport_name = profile.sport.name.lower()
+            if sport_name == "cricket":
+                cricket_stats = profile.cricket_stats.first()
+                if cricket_stats:
+                    profile_data["stats"] = {
+                        "runs": cricket_stats.runs,
+                        "wickets": cricket_stats.wickets,
+                        "matches_played": cricket_stats.matches_played,
+                        "strike_rate": cricket_stats.strike_rate,
+                        "average": cricket_stats.average,
+                    }
+            elif sport_name == "football":
+                football_stats = profile.football_stats.first()
+                if football_stats:
+                    profile_data["stats"] = {
+                        "goals": football_stats.goals,
+                        "assists": football_stats.assists,
+                        "tackles": football_stats.tackles,
+                        "matches_played": football_stats.matches_played,
+                    }
+            elif sport_name == "basketball":
+                basketball_stats = profile.basketball_stats.first()
+                if basketball_stats:
+                    profile_data["stats"] = {
+                        "points": basketball_stats.points,
+                        "rebounds": basketball_stats.rebounds,
+                        "assists": basketball_stats.assists,
+                        "matches_played": basketball_stats.matches_played,
+                    }
+            elif sport_name == "running":
+                running_stats = profile.running_stats.first()
+                if running_stats:
+                    profile_data["stats"] = {
+                        "total_distance_km": running_stats.total_distance_km,
+                        "best_time_seconds": running_stats.best_time_seconds,
+                        "events_participated": running_stats.events_participated,
+                        "matches_played": running_stats.matches_played,
+                    }
+        
+        players_dict[player.id]["profiles"].append(profile_data)
+    
+    players_list = list(players_dict.values())
 
     return Response({
-        "teams": [{"id": t.id, "name": t.name} for t in teams],
-        "players": [
-            {
-                "id": p.id,
-                "username": p.user.username,
-                "team": p.team.name if p.team else None,
-            } for p in players
-        ],
+        "teams": [{"id": t.id, "name": t.name, "sport": {"id": t.sport.id, "name": t.sport.name} if t.sport else None} for t in teams],
+        "players": players_list,
+        "total_students": len(players_list),
+        "total_teams": teams.count(),
     })
 
 
@@ -892,17 +1024,25 @@ class TeamProposalViewSet(viewsets.GenericViewSet):
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     def list(self, request):
-        """List team proposals (manager sees their own, admin sees all)."""
+        """List team proposals (coach sees their own, manager sees their own, admin sees all)."""
         qs = self.get_queryset().order_by("-created_at")
-        if request.user.role == User.Roles.MANAGER:
+        if request.user.role == User.Roles.COACH:
+            qs = qs.filter(coach__user=request.user)
+        elif request.user.role == User.Roles.MANAGER:
             qs = qs.filter(manager=request.user)
+        elif request.user.role != User.Roles.ADMIN:
+            qs = qs.none()
         return Response(TeamProposalSerializer(qs, many=True).data)
 
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):
-        """Manager approves team proposal."""
+        """Manager approves team proposal. Admin can bypass."""
         try:
             proposal = self.get_queryset().get(pk=pk)
+            # Allow admin or assigned manager
+            if request.user.role != User.Roles.ADMIN:
+                if proposal.manager_id != request.user.id:
+                    return Response({"detail": "Only the assigned manager or admin can approve"}, status=status.HTTP_403_FORBIDDEN)
             team = approve_team_proposal(proposal, decided_by=request.user)
         except TeamProposal.DoesNotExist:
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -912,10 +1052,14 @@ class TeamProposalViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="reject")
     def reject(self, request, pk=None):
-        """Manager rejects team proposal."""
+        """Manager rejects team proposal. Admin can bypass."""
         remarks = request.data.get("remarks")
         try:
             proposal = self.get_queryset().get(pk=pk)
+            # Allow admin or assigned manager
+            if request.user.role != User.Roles.ADMIN:
+                if proposal.manager_id != request.user.id:
+                    return Response({"detail": "Only the assigned manager or admin can reject"}, status=status.HTTP_403_FORBIDDEN)
             reject_team_proposal(proposal, decided_by=request.user, remarks=remarks)
         except TeamProposal.DoesNotExist:
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -935,9 +1079,22 @@ class TeamAssignmentRequestViewSet(viewsets.GenericViewSet):
     def get_permissions(self):
         if self.action in {"create"}:
             return [IsAuthenticatedAndManagerOrAdmin()]
-        if self.action in {"accept", "reject"}:
-            return [IsAuthenticatedAndCoach()]
+        if self.action in {"accept", "reject", "list"}:
+            # Admin can bypass - allow both coach and admin
+            return [IsAuthenticated()]
         return super().get_permissions()
+
+    def list(self, request):
+        """List team assignment requests."""
+        qs = self.get_queryset().order_by("-created_at")
+        if request.user.role == User.Roles.COACH:
+            qs = qs.filter(coach__user=request.user)
+        elif request.user.role == User.Roles.MANAGER:
+            qs = qs.filter(manager=request.user)
+        elif request.user.role != User.Roles.ADMIN:
+            qs = qs.none()
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
 
     def create(self, request):
         """Manager creates team assignment request."""
@@ -955,9 +1112,13 @@ class TeamAssignmentRequestViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="accept")
     def accept(self, request, pk=None):
-        """Coach accepts team assignment."""
+        """Coach accepts team assignment. Admin can bypass."""
         try:
             assignment = self.get_queryset().get(pk=pk)
+            # Allow admin or assigned coach
+            if request.user.role != User.Roles.ADMIN:
+                if not hasattr(request.user, "coach") or request.user.coach_id != assignment.coach_id:
+                    return Response({"detail": "Only the assigned coach or admin can accept"}, status=status.HTTP_403_FORBIDDEN)
             team = accept_team_assignment(assignment, decided_by=request.user)
         except TeamAssignmentRequest.DoesNotExist:
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -967,10 +1128,14 @@ class TeamAssignmentRequestViewSet(viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="reject")
     def reject(self, request, pk=None):
-        """Coach rejects team assignment."""
+        """Coach rejects team assignment. Admin can bypass."""
         remarks = request.data.get("remarks")
         try:
             assignment = self.get_queryset().get(pk=pk)
+            # Allow admin or assigned coach
+            if request.user.role != User.Roles.ADMIN:
+                if not hasattr(request.user, "coach") or request.user.coach.id != assignment.coach.id:
+                    return Response({"detail": "Only the assigned coach or admin can reject"}, status=status.HTTP_403_FORBIDDEN)
             reject_team_assignment(assignment, decided_by=request.user, remarks=remarks)
         except TeamAssignmentRequest.DoesNotExist:
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -1021,6 +1186,58 @@ class TournamentViewSet(viewsets.GenericViewSet):
         except Team.DoesNotExist:
             return Response({"detail": "Team not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    @action(detail=True, methods=["get"], url_path="matches")
+    def list_matches(self, request, pk=None):
+        """List matches for a tournament."""
+        try:
+            tournament = self.get_queryset().get(pk=pk)
+            matches = TournamentMatch.objects.filter(tournament=tournament).order_by("match_number")
+            return Response(TournamentMatchSerializer(matches, many=True).data)
+        except Tournament.DoesNotExist:
+            return Response({"detail": "Tournament not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+# -----------------------------
+# Tournament Match ViewSet
+# -----------------------------
+class TournamentMatchViewSet(viewsets.ModelViewSet):
+    queryset = TournamentMatch.objects.select_related("tournament", "team1", "team2", "man_of_the_match__user")
+    permission_classes = [IsAuthenticatedAndManagerOrAdmin]
+    
+    def get_serializer_class(self):
+        if self.action in ("create", "update", "partial_update"):
+            return TournamentMatchCreateSerializer
+        return TournamentMatchSerializer
+    
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.role == User.Roles.MANAGER:
+            # Manager sees matches for their tournaments
+            qs = qs.filter(tournament__manager=user)
+        return qs.order_by("tournament", "match_number")
+    
+    def perform_create(self, serializer):
+        """Create match and optionally create achievements on completion."""
+        match = serializer.save()
+        # If match is completed, could trigger achievement creation here
+        # For now, we'll handle it in the update action
+        return match
+    
+    def perform_update(self, serializer):
+        """Update match and create achievements if completed."""
+        match = serializer.save()
+        if match.is_completed and match.man_of_the_match:
+            # Create achievement for Man of the Match
+            from .models import Achievement
+            Achievement.objects.get_or_create(
+                player=match.man_of_the_match,
+                title=f"Man of the Match - {match.tournament.name}",
+                description=f"Man of the Match in {match.team1.name} vs {match.team2.name}",
+                date_awarded=match.date.date() if match.date else timezone.now().date(),
+                defaults={"sport": match.tournament.sport}
+            )
+
 
 # -----------------------------
 # Admin Manager-Sport Assignment ViewSet
@@ -1066,3 +1283,67 @@ class ManagerSportAssignmentViewSet(viewsets.GenericViewSet):
             return Response({"detail": "Removed"}, status=status.HTTP_200_OK)
         except ManagerSport.DoesNotExist:
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+# -----------------------------
+# PlayerSportProfile ViewSet
+# -----------------------------
+class PlayerSportProfileViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing PlayerSportProfile - allows managers/coaches to assign players to teams.
+    """
+    queryset = PlayerSportProfile.objects.select_related("player__user", "sport", "team", "coach__user")
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action in ("update", "partial_update"):
+            return PlayerSportProfileUpdateSerializer
+        return PlayerSportProfileSerializer
+
+    def get_queryset(self):
+        """Filter based on user role"""
+        user = self.request.user
+        qs = super().get_queryset()
+
+        # Managers can see profiles for their sports
+        if user.role == user.Roles.MANAGER:
+            if hasattr(user, 'manager'):
+                managed_sports = ManagerSport.objects.filter(manager=user.manager).values_list('sport_id', flat=True)
+                qs = qs.filter(sport_id__in=managed_sports)
+
+        # Coaches can see their own players
+        elif user.role == user.Roles.COACH:
+            if hasattr(user, 'coach'):
+                qs = qs.filter(coach=user.coach)
+
+        # Players can see their own profiles
+        elif user.role == user.Roles.PLAYER:
+            if hasattr(user, 'player'):
+                qs = qs.filter(player=user.player)
+
+        return qs
+
+    def update(self, request, *args, **kwargs):
+        """Allow managers/coaches to update team assignment"""
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+
+        # Check permissions
+        user = request.user
+        if user.role == user.Roles.MANAGER:
+            # Manager can update if they manage the sport
+            if hasattr(user, 'manager'):
+                if not ManagerSport.objects.filter(manager=user.manager, sport=instance.sport).exists():
+                    return Response({"detail": "You don't manage this sport"}, status=status.HTTP_403_FORBIDDEN)
+        elif user.role == user.Roles.COACH:
+            # Coach can update if it's their player
+            if not hasattr(user, 'coach') or instance.coach_id != user.coach.id:
+                return Response({"detail": "Not your player"}, status=status.HTTP_403_FORBIDDEN)
+        else:
+            return Response({"detail": "Only managers and coaches can update profiles"}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        return Response(PlayerSportProfileSerializer(instance).data)

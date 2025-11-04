@@ -46,6 +46,12 @@ def request_promotion(user: User, sport: Sport, player: Optional[Player] = None,
         remarks=remarks or "",
     )
     _notify(user, "Promotion request submitted", f"Requested coach role for {sport.name}", ntype="promotion")
+    
+    # Notify managers assigned to this sport
+    manager_sports = ManagerSport.objects.filter(sport=sport).select_related("manager__user")
+    for ms in manager_sports:
+        _notify(ms.manager.user, "Promotion Request", f"Player {player.user.username if player else user.username} requested promotion to coach for {sport.name}", ntype="promotion")
+    
     return pr
 
 
@@ -141,14 +147,18 @@ def player_request_coach(player: Player, coach: Coach, sport: Sport) -> CoachPla
 
 @transaction.atomic
 def accept_link_request(link: CoachPlayerLinkRequest, acting_user: User) -> PlayerSportProfile:
+    """Accept link request. Admin can bypass acceptance check."""
     if link.status != CoachPlayerLinkRequest.Status.PENDING:
         raise LinkError("Link request is not pending")
-    if link.direction == CoachPlayerLinkRequest.Direction.COACH_TO_PLAYER:
-        if not hasattr(acting_user, "player") or acting_user.player_id != link.player_id:
-            raise LinkError("Only the invited player can accept")
-    else:
-        if not hasattr(acting_user, "coach") or acting_user.coach_id != link.coach_id:
-            raise LinkError("Only the invited coach can accept")
+    
+    # Admin can bypass acceptance check
+    if acting_user.role != User.Roles.ADMIN:
+        if link.direction == CoachPlayerLinkRequest.Direction.COACH_TO_PLAYER:
+            if not hasattr(acting_user, "player") or acting_user.player_id != link.player_id:
+                raise LinkError("Only the invited player can accept")
+        else:
+            if not hasattr(acting_user, "coach") or acting_user.coach_id != link.coach_id:
+                raise LinkError("Only the invited coach can accept")
 
     psp, _ = PlayerSportProfile.objects.get_or_create(player=link.player, sport=link.sport)
     psp.coach = link.coach
@@ -158,8 +168,13 @@ def accept_link_request(link: CoachPlayerLinkRequest, acting_user: User) -> Play
     link.status = CoachPlayerLinkRequest.Status.ACCEPTED
     link.decided_at = timezone.now()
     link.save(update_fields=["status", "decided_at"])
-    _notify(link.coach.user, "Link accepted", f"Player {link.player.user.username} linked for {link.sport.name}", ntype="link")
-    _notify(link.player.user, "Link accepted", f"Coach {link.coach.user.username} linked for {link.sport.name}", ntype="link")
+    
+    if acting_user.role == User.Roles.ADMIN:
+        _notify(link.coach.user, "Link accepted (Admin)", f"Admin {acting_user.username} accepted link for {link.player.user.username} - {link.sport.name}", ntype="link")
+        _notify(link.player.user, "Link accepted (Admin)", f"Admin {acting_user.username} accepted link with {link.coach.user.username} for {link.sport.name}", ntype="link")
+    else:
+        _notify(link.coach.user, "Link accepted", f"Player {link.player.user.username} linked for {link.sport.name}", ntype="link")
+        _notify(link.player.user, "Link accepted", f"Coach {link.coach.user.username} linked for {link.sport.name}", ntype="link")
     return psp
 
 
@@ -220,12 +235,14 @@ def create_team_proposal(coach: Coach, manager: User, sport: Sport, team_name: s
 
 @transaction.atomic
 def approve_team_proposal(proposal: TeamProposal, decided_by: User) -> Team:
-    """Manager approves team proposal, creating the team."""
+    """Manager approves team proposal, creating the team. Admin can bypass."""
     if proposal.status != TeamProposal.Status.PENDING:
         raise TeamProposalError("Proposal is not pending")
     
-    if proposal.manager_id != decided_by.id:
-        raise TeamProposalError("Only the assigned manager can approve")
+    # Admin can bypass manager check
+    if decided_by.role != User.Roles.ADMIN:
+        if proposal.manager_id != decided_by.id:
+            raise TeamProposalError("Only the assigned manager can approve")
     
     # Create team
     team = Team.objects.create(
@@ -236,8 +253,25 @@ def approve_team_proposal(proposal: TeamProposal, decided_by: User) -> Team:
     )
     
     # Assign players to team via PlayerSportProfile
+    # Re-validate that players are not already in a team (in case assigned between proposal and approval)
     for player in proposal.proposed_players.all():
         profile = PlayerSportProfile.objects.get(player=player, sport=proposal.sport, coach=proposal.coach)
+        
+        # Double-check: player should not be in another team for this sport
+        if profile.team_id is not None and profile.team_id != team.id:
+            raise TeamProposalError(f"Player {player.player_id} is already in team '{profile.team.name}' for {proposal.sport.name}")
+        
+        # Also check for any other active profile for this player-sport with a team
+        other_profile = PlayerSportProfile.objects.filter(
+            player=player,
+            sport=proposal.sport,
+            team__isnull=False,
+            is_active=True
+        ).exclude(id=profile.id).first()
+        
+        if other_profile:
+            raise TeamProposalError(f"Player {player.player_id} is already in team '{other_profile.team.name}' for {proposal.sport.name}")
+        
         profile.team = team
         profile.save(update_fields=["team"])
     
@@ -246,18 +280,24 @@ def approve_team_proposal(proposal: TeamProposal, decided_by: User) -> Team:
     proposal.created_team = team
     proposal.save(update_fields=["status", "decided_at", "created_team"])
     
-    _notify(proposal.coach.user, "Team Proposal Approved", f"Team '{team.name}' has been created", ntype="team_proposal")
+    if decided_by.role == User.Roles.ADMIN:
+        _notify(proposal.coach.user, "Team Proposal Approved (Admin)", f"Admin {decided_by.username} approved your team proposal '{proposal.team_name}' - Team '{team.name}' created", ntype="team_proposal")
+        _notify(proposal.manager, "Team Proposal Approved (Admin)", f"Admin {decided_by.username} approved team proposal '{proposal.team_name}' by {proposal.coach.user.username}", ntype="team_proposal")
+    else:
+        _notify(proposal.coach.user, "Team Proposal Approved", f"Your team proposal '{proposal.team_name}' was approved - Team '{team.name}' created", ntype="team_proposal")
     return team
 
 
 @transaction.atomic
 def reject_team_proposal(proposal: TeamProposal, decided_by: User, remarks: str = None) -> TeamProposal:
-    """Manager rejects team proposal."""
+    """Manager rejects team proposal. Admin can bypass."""
     if proposal.status != TeamProposal.Status.PENDING:
         raise TeamProposalError("Proposal is not pending")
     
-    if proposal.manager_id != decided_by.id:
-        raise TeamProposalError("Only the assigned manager can reject")
+    # Admin can bypass manager check
+    if decided_by.role != User.Roles.ADMIN:
+        if proposal.manager_id != decided_by.id:
+            raise TeamProposalError("Only the assigned manager can reject")
     
     proposal.status = TeamProposal.Status.REJECTED
     proposal.decided_at = timezone.now()
@@ -265,7 +305,10 @@ def reject_team_proposal(proposal: TeamProposal, decided_by: User, remarks: str 
         proposal.remarks = remarks
     proposal.save(update_fields=["status", "decided_at", "remarks"])
     
-    _notify(proposal.coach.user, "Team Proposal Rejected", remarks or "Your team proposal was rejected", ntype="team_proposal")
+    if decided_by.role == User.Roles.ADMIN:
+        _notify(proposal.coach.user, "Team Proposal Rejected (Admin)", remarks or f"Admin {decided_by.username} rejected your team proposal '{proposal.team_name}'", ntype="team_proposal")
+    else:
+        _notify(proposal.coach.user, "Team Proposal Rejected", remarks or f"Your team proposal '{proposal.team_name}' was rejected by {decided_by.username}", ntype="team_proposal")
     return proposal
 
 
@@ -277,13 +320,28 @@ class TeamAssignmentError(Exception):
 
 
 @transaction.atomic
-def create_team_assignment(manager: User, coach: Coach, team: Team) -> TeamAssignmentRequest:
-    """Manager assigns coach to team (via request)."""
+def create_team_assignment(manager: User, coach: Coach, team: Team, auto_accept=False) -> TeamAssignmentRequest:
+    """Manager assigns coach to team (via request). Admin can auto-accept."""
     if team.manager_id != manager.id and manager.role != User.Roles.ADMIN:
         raise TeamAssignmentError("You don't own this team")
     
     if team.sport and coach.primary_sport_id != team.sport_id:
         raise TeamAssignmentError("Coach primary sport must match team sport")
+    
+    # If admin auto-accepts, directly assign
+    if auto_accept and manager.role == User.Roles.ADMIN:
+        team.coach = coach
+        team.save(update_fields=["coach"])
+        _notify(coach.user, "Team Assignment (Admin)", f"Admin {manager.username} assigned you to team '{team.name}'", ntype="team_assignment")
+        # Create accepted request for record-keeping
+        request = TeamAssignmentRequest.objects.create(
+            manager=manager,
+            coach=coach,
+            team=team,
+            status=TeamAssignmentRequest.Status.ACCEPTED,
+            decided_at=timezone.now(),
+        )
+        return request
     
     # Check if already pending
     existing = TeamAssignmentRequest.objects.filter(coach=coach, team=team, status=TeamAssignmentRequest.Status.PENDING)
@@ -302,14 +360,16 @@ def create_team_assignment(manager: User, coach: Coach, team: Team) -> TeamAssig
 
 @transaction.atomic
 def accept_team_assignment(request: TeamAssignmentRequest, decided_by: User) -> Team:
-    """Coach accepts team assignment."""
+    """Coach accepts team assignment. Admin can bypass."""
     if request.status != TeamAssignmentRequest.Status.PENDING:
         raise TeamAssignmentError("Assignment is not pending")
     
-    if not hasattr(decided_by, "coach") or decided_by.coach_id != request.coach_id:
-        raise TeamAssignmentError("Only the assigned coach can accept")
+    # Admin can bypass acceptance check
+    if decided_by.role != User.Roles.ADMIN:
+        if not hasattr(decided_by, "coach") or decided_by.coach_id != request.coach_id:
+            raise TeamAssignmentError("Only the assigned coach can accept")
     
-    # Assign coach to team (admin can bypass, but normal flow requires acceptance)
+    # Assign coach to team
     request.team.coach = request.coach
     request.team.save(update_fields=["coach"])
     
@@ -317,18 +377,24 @@ def accept_team_assignment(request: TeamAssignmentRequest, decided_by: User) -> 
     request.decided_at = timezone.now()
     request.save(update_fields=["status", "decided_at"])
     
-    _notify(request.manager, "Team Assignment Accepted", f"Coach {request.coach.user.username} accepted assignment to '{request.team.name}'", ntype="team_assignment")
+    if decided_by.role == User.Roles.ADMIN:
+        _notify(request.manager, "Team Assignment Accepted (Admin)", f"Admin {decided_by.username} accepted assignment of {request.coach.user.username} to '{request.team.name}'", ntype="team_assignment")
+        _notify(request.coach.user, "Team Assignment Accepted (Admin)", f"Admin {decided_by.username} accepted your assignment to '{request.team.name}'", ntype="team_assignment")
+    else:
+        _notify(request.manager, "Team Assignment Accepted", f"Coach {request.coach.user.username} accepted assignment to '{request.team.name}'", ntype="team_assignment")
     return request.team
 
 
 @transaction.atomic
 def reject_team_assignment(request: TeamAssignmentRequest, decided_by: User, remarks: str = None) -> TeamAssignmentRequest:
-    """Coach rejects team assignment."""
+    """Coach rejects team assignment. Admin can bypass."""
     if request.status != TeamAssignmentRequest.Status.PENDING:
         raise TeamAssignmentError("Assignment is not pending")
     
-    if not hasattr(decided_by, "coach") or decided_by.coach_id != request.coach_id:
-        raise TeamAssignmentError("Only the assigned coach can reject")
+    # Admin can bypass rejection check
+    if decided_by.role != User.Roles.ADMIN:
+        if not hasattr(decided_by, "coach") or decided_by.coach.id != request.coach.id:
+            raise TeamAssignmentError("Only the assigned coach can reject")
     
     request.status = TeamAssignmentRequest.Status.REJECTED
     request.decided_at = timezone.now()
@@ -336,7 +402,11 @@ def reject_team_assignment(request: TeamAssignmentRequest, decided_by: User, rem
         request.remarks = remarks
     request.save(update_fields=["status", "decided_at", "remarks"])
     
-    _notify(request.manager, "Team Assignment Rejected", remarks or "Coach rejected the assignment", ntype="team_assignment")
+    if decided_by.role == User.Roles.ADMIN:
+        _notify(request.manager, "Team Assignment Rejected (Admin)", f"Admin {decided_by.username} rejected assignment of {request.coach.user.username} to '{request.team.name}'", ntype="team_assignment")
+        _notify(request.coach.user, "Team Assignment Rejected (Admin)", f"Admin {decided_by.username} rejected your assignment to '{request.team.name}'", ntype="team_assignment")
+    else:
+        _notify(request.manager, "Team Assignment Rejected", remarks or f"Coach {request.coach.user.username} rejected the assignment to '{request.team.name}'", ntype="team_assignment")
     return request
 
 

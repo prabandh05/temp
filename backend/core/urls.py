@@ -10,7 +10,7 @@ from .views import (
     CustomObtainAuthToken, RoleAwareProfileView, player_profile, coach_profile,
     PromotionRequestViewSet, CoachingSessionViewSet, CoachPlayerLinkViewSet, NotificationViewSet,
     SportViewSet, TeamProposalViewSet, TeamAssignmentRequestViewSet, TournamentViewSet,
-    ManagerSportAssignmentViewSet,
+    TournamentMatchViewSet, ManagerSportAssignmentViewSet, PlayerSportProfileViewSet,
 )
 
 
@@ -28,7 +28,9 @@ router.register(r"sports", SportViewSet, basename="sports")
 router.register(r"team-proposals", TeamProposalViewSet, basename="team-proposals")
 router.register(r"team-assignments", TeamAssignmentRequestViewSet, basename="team-assignments")
 router.register(r"tournaments", TournamentViewSet, basename="tournaments")
+router.register(r"tournament-matches", TournamentMatchViewSet, basename="tournament-matches")
 router.register(r"manager-sport-assignments", ManagerSportAssignmentViewSet, basename="manager-sport-assignments")
+router.register(r"player-sport-profiles", PlayerSportProfileViewSet, basename="player-sport-profiles")
 
 urlpatterns = [
     

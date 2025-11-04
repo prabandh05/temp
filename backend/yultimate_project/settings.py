@@ -97,16 +97,27 @@ WSGI_APPLICATION = 'yultimate_project.wsgi.application'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 
+# Database configuration - Use environment variables for production
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'temp_social',  # Fresh database name
-        'USER': 'postgres',
-        'PASSWORD': 'password',  # Replace with your actual password
-        'HOST': 'localhost',
-        'PORT': '5432',
+        'ENGINE': config('DB_ENGINE', default='django.db.backends.postgresql'),
+        'NAME': config('DB_NAME', default='temp_social'),
+        'USER': config('DB_USER', default='postgres'),
+        'PASSWORD': config('DB_PASSWORD', default='password'),
+        'HOST': config('DB_HOST', default='localhost'),
+        'PORT': config('DB_PORT', default='5432'),
+        'OPTIONS': {
+            'connect_timeout': 10,
+        } if config('DB_ENGINE', default='').endswith('postgresql') else {},
     }
 }
+
+# Fallback to SQLite for development if Postgres not available
+if config('USE_SQLITE', default='False') == 'True':
+    DATABASES['default'] = {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
 
 
 
@@ -152,13 +163,29 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # AUTH_USER_MODEL = 'core.User'
 
-# CORS settings
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",  # React frontend
-    "http://127.0.0.1:3000",
-]
+# CORS settings - Configure via environment variables
+CORS_ALLOWED_ORIGINS = config(
+    'CORS_ALLOWED_ORIGINS',
+    default='http://localhost:3000,http://127.0.0.1:3000'
+).split(',')
 
-CORS_ALLOW_CREDENTIALS = True
+# Allow all origins in development (set CORS_ALLOW_ALL_ORIGINS=true)
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default='False') == 'True'
+
+CORS_ALLOW_CREDENTIALS = config('CORS_ALLOW_CREDENTIALS', default='True') == 'True'
+
+# Additional CORS settings for security
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
 
 # Media files (for team logos, etc.)
 MEDIA_URL = '/media/'

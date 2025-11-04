@@ -50,6 +50,22 @@ export const uploadSessionCsv = (sessionId, file) => {
   });
 };
 
+/** List coaching sessions */
+export const listSessions = () => {
+  return api.get('/api/sessions/');
+};
+
+/** End a session (mark as inactive and optionally upload final attendance CSV) */
+export const endSession = (sessionId, file = null) => {
+  const formData = new FormData();
+  if (file) {
+    formData.append('file', file);
+  }
+  return api.post(`/api/sessions/${sessionId}/end-session/`, formData, {
+    headers: file ? { 'Content-Type': 'multipart/form-data' } : {},
+  });
+};
+
 /**
  * Fetches the coach's own profile data.
  */
@@ -123,6 +139,31 @@ export const addTeamToTournament = (tournamentId, teamId) => {
   return api.post(`/api/tournaments/${tournamentId}/add-team/`, { team_id: teamId });
 };
 
+/** List matches for a tournament. */
+export const listTournamentMatches = (tournamentId) => {
+  return api.get(`/api/tournaments/${tournamentId}/matches/`);
+};
+
+/** Create a tournament match. */
+export const createTournamentMatch = (payload) => {
+  return api.post('/api/tournament-matches/', payload);
+};
+
+/** Update a tournament match. */
+export const updateTournamentMatch = (matchId, payload) => {
+  return api.patch(`/api/tournament-matches/${matchId}/`, payload);
+};
+
+/** List all tournament matches. */
+export const listAllTournamentMatches = () => {
+  return api.get('/api/tournament-matches/');
+};
+
+/** List team assignment requests */
+export const listTeamAssignments = () => {
+  return api.get('/api/team-assignments/');
+};
+
 /** Create team assignment request (manager) */
 export const createTeamAssignment = ({ coachId, teamId }) => {
   return api.post('/api/team-assignments/', { coach_id: coachId, team_id: teamId });
@@ -141,6 +182,21 @@ export const listNotifications = () => {
   return api.get('/api/notifications/');
 };
 
+/** Accept coach-player link request */
+export const acceptLinkRequest = (linkId) => {
+  return api.post(`/api/coach-player-links/${linkId}/accept/`);
+};
+
+/** Reject coach-player link request */
+export const rejectLinkRequest = (linkId) => {
+  return api.post(`/api/coach-player-links/${linkId}/reject/`);
+};
+
+/** List coach-player link requests */
+export const listLinkRequests = () => {
+  return api.get('/api/coach-player-links/');
+};
+
 /** Promotion requests (manager/admin) */
 export const listPromotionRequests = () => {
   return api.get('/api/promotion/');
@@ -150,4 +206,45 @@ export const approvePromotionRequest = (id) => {
 };
 export const rejectPromotionRequest = (id, remarks) => {
   return api.post(`/api/promotion/${id}/reject/`, { remarks });
+};
+
+/** Manager Team Management */
+export const createTeam = ({ name, sportId, coachId, managerId }) => {
+  return api.post('/api/teams/', {
+    name,
+    sport: sportId,
+    coach: coachId,
+    manager: managerId,
+  });
+};
+
+export const getTeamDetails = (teamId) => {
+  return api.get(`/api/teams/${teamId}/`);
+};
+
+export const updateTeam = (teamId, data) => {
+  return api.patch(`/api/teams/${teamId}/`, data);
+};
+
+export const deleteTeam = (teamId) => {
+  return api.delete(`/api/teams/${teamId}/`);
+};
+
+export const listPlayers = () => {
+  return api.get('/api/players/');
+};
+
+/** Get all PlayerSportProfiles (filtered by backend based on role) */
+export const listPlayerSportProfiles = () => {
+  return api.get('/api/player-sport-profiles/');
+};
+
+/** Get specific PlayerSportProfile */
+export const getPlayerSportProfile = (profileId) => {
+  return api.get(`/api/player-sport-profiles/${profileId}/`);
+};
+
+/** Update PlayerSportProfile (assign/remove team) */
+export const updatePlayerSportProfile = (profileId, data) => {
+  return api.patch(`/api/player-sport-profiles/${profileId}/`, data);
 };
