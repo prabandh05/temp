@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Trophy } from "lucide-react";
 import {
   getSports,
   listTeamProposals,
@@ -23,6 +25,20 @@ import {
   listTournamentMatches,
   createTournamentMatch,
   updateTournamentMatch,
+  startTournament,
+  endTournament,
+  getPointsTable,
+  getTournamentLeaderboard,
+  startMatch,
+  setBatsmen,
+  setBowler,
+  addScore,
+  addWicket,
+  switchInnings,
+  completeMatch,
+  cancelMatch,
+  getMatchState,
+  getMatchPlayerStats,
 } from "../services/coach";
 
 export default function ManagerDashboard() {
@@ -31,7 +47,7 @@ export default function ManagerDashboard() {
   const [teams, setTeams] = useState([]);
   const [tournaments, setTournaments] = useState([]);
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ name: "", sportId: "", location: "" });
+  const [form, setForm] = useState({ name: "", sportId: "", location: "", overs_per_match: 20 });
   const [assignForm, setAssignForm] = useState({ tournamentId: "", teamId: "" });
   const [error, setError] = useState("");
   const [assignment, setAssignment] = useState({ teamId: "", coachId: "" });
@@ -45,6 +61,12 @@ export default function ManagerDashboard() {
   const [selectedTournamentForMatches, setSelectedTournamentForMatches] = useState(null);
   const [tournamentMatches, setTournamentMatches] = useState({});
   const [showMatchModal, setShowMatchModal] = useState(false);
+  const [pointsTable, setPointsTable] = useState({});
+  const [leaderboard, setLeaderboard] = useState({});
+  const [selectedTournamentForDetails, setSelectedTournamentForDetails] = useState(null);
+  const [selectedMatchForScoring, setSelectedMatchForScoring] = useState(null);
+  const [matchState, setMatchState] = useState(null);
+  const [matchPlayerStats, setMatchPlayerStats] = useState([]);
   const [matchForm, setMatchForm] = useState({
     tournament_id: null,
     team1_id: "",
@@ -104,6 +126,7 @@ export default function ManagerDashboard() {
   }, []);
 
   const sportOptions = useMemo(() => sports.map(s => ({ value: s.id, label: s.name })), [sports]);
+  const navigate = useNavigate();
 
   return (
     <div className="min-h-screen bg-[#0f172a]">
@@ -113,10 +136,18 @@ export default function ManagerDashboard() {
             <h1 className="text-2xl font-semibold text-white">Manager Dashboard</h1>
             {error && <div className="mt-2 text-sm text-[#ef4444]">{error}</div>}
           </div>
-          <button
-            onClick={() => { localStorage.clear(); window.location.href = "/login"; }}
-            className="text-sm text-[#ef4444] hover:text-[#dc2626] transition-colors px-3 py-1 rounded border border-[#ef4444] hover:bg-[#ef4444]/10"
-          >Logout</button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate("/tournaments")}
+              className="flex items-center gap-2 px-4 py-2 bg-[#38bdf8] hover:bg-[#0ea5e9] text-white rounded-lg transition-colors"
+            >
+              <Trophy size={18} /> Tournament Management
+            </button>
+            <button
+              onClick={() => { localStorage.clear(); window.location.href = "/login"; }}
+              className="text-sm text-[#ef4444] hover:text-[#dc2626] transition-colors px-3 py-1 rounded border border-[#ef4444] hover:bg-[#ef4444]/10"
+            >Logout</button>
+          </div>
         </div>
 
         {/* Team Management */}
@@ -464,7 +495,7 @@ export default function ManagerDashboard() {
         {/* Create Tournament */}
         <section className="bg-[#1e293b] border border-[#334155] rounded bg-[#0f172a] rounded-xl p-4">
           <div className="font-semibold mb-3 text-white">Create Tournament</div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <input
               placeholder="Tournament name"
               value={form.name}
@@ -481,6 +512,17 @@ export default function ManagerDashboard() {
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
+            <select
+              value={form.overs_per_match}
+              onChange={(e) => setForm(v => ({ ...v, overs_per_match: Number(e.target.value) }))}
+              className="p-2 border border-[#334155] rounded bg-[#0f172a] text-white"
+            >
+              <option value={5}>5 Overs</option>
+              <option value={10}>10 Overs</option>
+              <option value={20}>20 Overs</option>
+              <option value={30}>30 Overs</option>
+              <option value={50}>50 Overs</option>
+            </select>
             <input
               placeholder="Location"
               value={form.location}
@@ -495,10 +537,15 @@ export default function ManagerDashboard() {
                 setCreating(true);
                 setError("");
                 try {
-                  await createTournament({ name: form.name, sport: Number(form.sportId), location: form.location });
+                  await createTournament({ 
+                    name: form.name, 
+                    sport: Number(form.sportId), 
+                    location: form.location,
+                    overs_per_match: form.overs_per_match || 20
+                  });
                   const tt = await listTournaments();
                   setTournaments(tt.data || []);
-                  setForm({ name: "", sportId: "", location: "" });
+                  setForm({ name: "", sportId: "", location: "", overs_per_match: 20 });
                 } catch (e) {
                   setError(e?.response?.data?.detail || 'Failed to create tournament');
                 } finally {
@@ -519,9 +566,61 @@ export default function ManagerDashboard() {
                 <div className="flex items-center justify-between mb-2">
                   <div>
                     <div className="font-medium">{t.name}</div>
-                    <div className="text-xs text-[#94a3b8]">{t.sport?.name || 'Sport'} • {t.location || '-'}</div>
+                    <div className="text-xs text-[#94a3b8]">
+                      {t.sport?.name || 'Sport'} • {t.location || '-'} 
+                      {t.overs_per_match && ` • ${t.overs_per_match} Overs`}
+                      {t.status && ` • Status: ${t.status}`}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {t.status === 'upcoming' && (
+                      <button
+                        onClick={async () => {
+                          try {
+                            await startTournament(t.id);
+                            await fetchAllData();
+                            alert('Tournament started');
+                          } catch (e) {
+                            alert(e?.response?.data?.detail || 'Failed to start tournament');
+                          }
+                        }}
+                        className="px-3 py-1 text-sm rounded bg-[#10b981] hover:bg-[#059669] text-white transition-colors"
+                      >Start Tournament</button>
+                    )}
+                    {t.status === 'ongoing' && (
+                      <button
+                        onClick={async () => {
+                          if (window.confirm('End tournament? This will create achievements.')) {
+                            try {
+                              const result = await endTournament(t.id);
+                              await fetchAllData();
+                              alert(`Tournament ended!\nAchievements: ${result.data.achievements_created?.join(', ') || 'None'}\nWinning Team: ${result.data.winning_team || 'N/A'}`);
+                            } catch (e) {
+                              alert(e?.response?.data?.detail || 'Failed to end tournament');
+                            }
+                          }
+                        }}
+                        className="px-3 py-1 text-sm rounded bg-[#ef4444] hover:bg-[#dc2626] text-white transition-colors"
+                      >End Tournament</button>
+                    )}
+                    <button
+                      onClick={async () => {
+                        setSelectedTournamentForDetails(selectedTournamentForDetails === t.id ? null : t.id);
+                        if (selectedTournamentForDetails !== t.id) {
+                          try {
+                            const [points, leaderboard] = await Promise.all([
+                              getPointsTable(t.id),
+                              getTournamentLeaderboard(t.id)
+                            ]);
+                            setPointsTable({ ...pointsTable, [t.id]: points.data || [] });
+                            setLeaderboard({ ...leaderboard, [t.id]: leaderboard.data || {} });
+                          } catch (e) {
+                            console.error('Failed to load details', e);
+                          }
+                        }
+                      }}
+                      className="px-3 py-1 text-sm border border-[#334155] rounded bg-[#0f172a] text-white"
+                    >{selectedTournamentForDetails === t.id ? 'Hide' : 'View'} Details</button>
                     <select
                       value={assignForm.tournamentId === String(t.id) ? assignForm.teamId : ''}
                       onChange={(e) => setAssignForm({ tournamentId: String(t.id), teamId: e.target.value })}
@@ -585,19 +684,114 @@ export default function ManagerDashboard() {
                           <div>
                             <span className="font-medium">#{m.match_number}</span> {m.team1?.name || 'T1'} vs {m.team2?.name || 'T2'}
                             {m.is_completed && (
-                              <span className="ml-2 text-xs">({m.score_team1} - {m.score_team2})</span>
+                              <span className="ml-2 text-xs">({m.score_team1}/{m.wickets_team1} - {m.score_team2}/{m.wickets_team2})</span>
                             )}
                             {m.man_of_the_match && (
                               <span className="ml-2 text-xs text-blue-600">MOM: {m.man_of_the_match?.user?.username || 'Player'}</span>
                             )}
+                            {m.status === 'in_progress' && (
+                              <span className="ml-2 text-xs text-[#10b981]">● Live</span>
+                            )}
                           </div>
-                          <div className="text-xs text-[#94a3b8]">
-                            {m.is_completed ? '✓ Completed' : 'Pending'}
+                          <div className="flex items-center gap-2">
+                            <div className="text-xs text-[#94a3b8]">
+                              {m.is_completed ? '✓ Completed' : m.status === 'in_progress' ? 'In Progress' : 'Pending'}
+                            </div>
+                            {m.status === 'in_progress' && t.sport?.name?.toLowerCase() === 'cricket' && (
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    const [state, stats] = await Promise.all([
+                                      getMatchState(m.id),
+                                      getMatchPlayerStats(m.id)
+                                    ]);
+                                    setMatchState(state.data);
+                                    setMatchPlayerStats(stats.data || []);
+                                    setSelectedMatchForScoring(m.id);
+                                  } catch (e) {
+                                    alert('Failed to load match state');
+                                  }
+                                }}
+                                className="px-2 py-1 text-xs rounded bg-[#38bdf8] hover:bg-[#0ea5e9] text-white"
+                              >Score</button>
+                            )}
+                            {m.status !== 'in_progress' && !m.is_completed && t.sport?.name?.toLowerCase() === 'cricket' && (
+                              <button
+                                onClick={() => {
+                                  setSelectedMatchForScoring(m.id);
+                                  setMatchState(null);
+                                  setMatchPlayerStats([]);
+                                }}
+                                className="px-2 py-1 text-xs rounded bg-[#10b981] hover:bg-[#059669] text-white"
+                              >Start</button>
+                            )}
                           </div>
                         </div>
                       </div>
                     )) : (
                       <div className="text-xs text-[#94a3b8]">No matches yet</div>
+                    )}
+                  </div>
+                )}
+                {selectedTournamentForDetails === t.id && (
+                  <div className="mt-3 space-y-3 border-t pt-3">
+                    {/* Points Table */}
+                    {pointsTable[t.id] && pointsTable[t.id].length > 0 && (
+                      <div className="mb-3">
+                        <div className="text-xs font-semibold text-[#94a3b8] mb-2">Points Table:</div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b border-[#334155]">
+                                <th className="text-left p-2">Team</th>
+                                <th className="text-center p-2">MP</th>
+                                <th className="text-center p-2">W</th>
+                                <th className="text-center p-2">L</th>
+                                <th className="text-center p-2">Pts</th>
+                                <th className="text-center p-2">NRR</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pointsTable[t.id].sort((a, b) => {
+                                const pointsDiff = (b.points || 0) - (a.points || 0);
+                                if (pointsDiff !== 0) return pointsDiff;
+                                const nrrA = Number(a.net_run_rate) || 0;
+                                const nrrB = Number(b.net_run_rate) || 0;
+                                return nrrB - nrrA;
+                              }).map((pt, idx) => (
+                                <tr key={pt.id || idx} className="border-b border-[#334155]">
+                                  <td className="p-2">{pt.team?.name || 'Unknown'}</td>
+                                  <td className="text-center p-2">{pt.matches_played || 0}</td>
+                                  <td className="text-center p-2">{pt.matches_won || 0}</td>
+                                  <td className="text-center p-2">{pt.matches_lost || 0}</td>
+                                  <td className="text-center p-2 font-semibold">{pt.points || 0}</td>
+                                  <td className="text-center p-2">{(() => {
+                                    const netRunRate = Number(pt.net_run_rate);
+                                    return !isNaN(netRunRate) ? netRunRate.toFixed(2) : '0.00';
+                                  })()}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                    {/* Leaderboard */}
+                    {leaderboard[t.id] && (
+                      <div>
+                        <div className="text-xs font-semibold text-[#94a3b8] mb-2">Leaderboard:</div>
+                        <div className="text-xs space-y-1">
+                          {leaderboard[t.id].top_scorer && (
+                            <div>🏆 Top Scorer: {leaderboard[t.id].top_scorer?.player__user__username || 'N/A'}</div>
+                          )}
+                          {leaderboard[t.id].most_wickets && (
+                            <div>🏆 Most Wickets: {leaderboard[t.id].most_wickets?.player__user__username || 'N/A'}</div>
+                          )}
+                          {leaderboard[t.id].most_mom && (
+                            <div>🏆 Most MoM: {leaderboard[t.id].most_mom?.man_of_the_match__user__username || 'N/A'}</div>
+                          )}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}
@@ -805,6 +999,300 @@ export default function ManagerDashboard() {
                 >Cancel</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Cricket Match Scoring Modal */}
+      {selectedMatchForScoring && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-[#1e293b] rounded-xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-semibold text-white">Cricket Match Scoring</h3>
+              <button onClick={() => {
+                setSelectedMatchForScoring(null);
+                setMatchState(null);
+                setMatchPlayerStats([]);
+              }} className="text-[#94a3b8] hover:text-white text-2xl">×</button>
+            </div>
+            
+            {(() => {
+              const match = tournamentMatches[Object.keys(tournamentMatches).find(k => tournamentMatches[k].find(m => m.id === selectedMatchForScoring))]?.find(m => m.id === selectedMatchForScoring);
+              if (!match) return <div className="text-white">Match not found</div>;
+              
+              // Start match form
+              if (!matchState && match.status !== 'in_progress') {
+                return (
+                  <div className="space-y-4">
+                    <div className="text-white mb-4">Start Match: {match.team1?.name} vs {match.team2?.name}</div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium mb-2 text-white">Toss Won By</label>
+                        <select
+                          id="toss_won_by"
+                          className="w-full p-2 border border-[#334155] rounded bg-[#0f172a] text-white"
+                        >
+                          <option value="">Select team</option>
+                          <option value={match.team1?.id}>{match.team1?.name}</option>
+                          <option value={match.team2?.id}>{match.team2?.name}</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium mb-2 text-white">Batting First</label>
+                        <select
+                          id="batting_first"
+                          className="w-full p-2 border border-[#334155] rounded bg-[#0f172a] text-white"
+                        >
+                          <option value="">Select team</option>
+                          <option value={match.team1?.id}>{match.team1?.name}</option>
+                          <option value={match.team2?.id}>{match.team2?.name}</option>
+                        </select>
+                      </div>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        const tossWon = document.getElementById('toss_won_by').value;
+                        const battingFirst = document.getElementById('batting_first').value;
+                        if (!tossWon || !battingFirst) {
+                          alert('Please select toss winner and batting first team');
+                          return;
+                        }
+                        try {
+                          const result = await startMatch(selectedMatchForScoring, {
+                            toss_won_by_team_id: Number(tossWon),
+                            batting_first_team_id: Number(battingFirst)
+                          });
+                          setMatchState(result.data.state);
+                          await fetchAllData();
+                          // Reload matches
+                          const matches = await listTournamentMatches(match.tournament.id);
+                          setTournamentMatches({ ...tournamentMatches, [match.tournament.id]: matches.data || [] });
+                        } catch (e) {
+                          alert(e?.response?.data?.detail || 'Failed to start match');
+                        }
+                      }}
+                      className="w-full px-4 py-2 bg-[#10b981] hover:bg-[#059669] text-white rounded"
+                    >Start Match</button>
+                  </div>
+                );
+              }
+              
+              // Match scoring interface
+              if (matchState) {
+                const battingTeam = matchState.current_batting_team;
+                const bowlingTeam = matchState.current_bowling_team;
+                const currentScore = battingTeam?.id === match.team1?.id ? matchState.team1_runs : matchState.team2_runs;
+                const currentWickets = battingTeam?.id === match.team1?.id ? matchState.team1_wickets : matchState.team2_wickets;
+                
+                return (
+                  <div className="space-y-4">
+                    {/* Score Display */}
+                    <div className="bg-[#0f172a] p-4 rounded-lg border border-[#334155]">
+                      <div className="text-center mb-2">
+                        <div className="text-2xl font-bold text-white">
+                          {currentScore}/{currentWickets}
+                        </div>
+                        <div className="text-sm text-[#94a3b8]">
+                          {matchState.current_over}.{matchState.current_ball} / {match.tournament.overs_per_match || 20} Overs
+                        </div>
+                      </div>
+                      <div className="text-xs text-[#94a3b8] mt-2">
+                        Batting: {battingTeam?.name} | Bowling: {bowlingTeam?.name}
+                      </div>
+                    </div>
+                    
+                    {/* Set Batsmen */}
+                    {!matchState.batsman1 || !matchState.batsman2 ? (
+                      <div className="bg-[#0f172a] p-4 rounded-lg border border-[#334155]">
+                        <div className="text-white font-semibold mb-2">Set Batsmen ({battingTeam?.name})</div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-sm mb-1 text-[#94a3b8]">Batsman 1</label>
+                            <select
+                              id="batsman1"
+                              className="w-full p-2 border border-[#334155] rounded bg-[#1e293b] text-white"
+                            >
+                              <option value="">Select player</option>
+                              {matchPlayerStats.filter(s => s.team?.id === battingTeam?.id).map(s => (
+                                <option key={s.player?.id} value={s.player?.id}>{s.player?.user?.username || s.player?.player_id}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-sm mb-1 text-[#94a3b8]">Batsman 2</label>
+                            <select
+                              id="batsman2"
+                              className="w-full p-2 border border-[#334155] rounded bg-[#1e293b] text-white"
+                            >
+                              <option value="">Select player</option>
+                              {matchPlayerStats.filter(s => s.team?.id === battingTeam?.id).map(s => (
+                                <option key={s.player?.id} value={s.player?.id}>{s.player?.user?.username || s.player?.player_id}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            const b1 = document.getElementById('batsman1').value;
+                            const b2 = document.getElementById('batsman2').value;
+                            if (!b1 || !b2) {
+                              alert('Please select both batsmen');
+                              return;
+                            }
+                            try {
+                              const result = await setBatsmen(selectedMatchForScoring, {
+                                batsman1_id: Number(b1),
+                                batsman2_id: Number(b2),
+                                current_striker_id: Number(b1)
+                              });
+                              setMatchState(result.data);
+                            } catch (e) {
+                              alert(e?.response?.data?.detail || 'Failed to set batsmen');
+                            }
+                          }}
+                          className="mt-2 w-full px-4 py-2 bg-[#38bdf8] hover:bg-[#0ea5e9] text-white rounded"
+                        >Set Batsmen</button>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Set Bowler */}
+                        {!matchState.current_bowler && (
+                          <div className="bg-[#0f172a] p-4 rounded-lg border border-[#334155]">
+                            <div className="text-white font-semibold mb-2">Set Bowler ({bowlingTeam?.name})</div>
+                            <select
+                              id="bowler"
+                              className="w-full p-2 border border-[#334155] rounded bg-[#1e293b] text-white mb-2"
+                            >
+                              <option value="">Select bowler</option>
+                              {matchPlayerStats.filter(s => s.team?.id === bowlingTeam?.id).map(s => (
+                                <option key={s.player?.id} value={s.player?.id}>{s.player?.user?.username || s.player?.player_id}</option>
+                              ))}
+                            </select>
+                            <button
+                              onClick={async () => {
+                                const bowler = document.getElementById('bowler').value;
+                                if (!bowler) {
+                                  alert('Please select bowler');
+                                  return;
+                                }
+                                try {
+                                  const result = await setBowler(selectedMatchForScoring, { bowler_id: Number(bowler) });
+                                  setMatchState(result.data);
+                                } catch (e) {
+                                  alert(e?.response?.data?.detail || 'Failed to set bowler');
+                                }
+                              }}
+                              className="w-full px-4 py-2 bg-[#38bdf8] hover:bg-[#0ea5e9] text-white rounded"
+                            >Set Bowler</button>
+                          </div>
+                        )}
+                        
+                        {/* Scoring Controls */}
+                        {matchState.current_bowler && (
+                          <div className="bg-[#0f172a] p-4 rounded-lg border border-[#334155]">
+                            <div className="text-white font-semibold mb-3">Score Runs</div>
+                            <div className="grid grid-cols-4 gap-2 mb-3">
+                              {[0, 1, 2, 3, 4, 5, 6].map(runs => (
+                                <button
+                                  key={runs}
+                                  onClick={async () => {
+                                    try {
+                                      const result = await addScore(selectedMatchForScoring, { runs });
+                                      setMatchState(result.data);
+                                      // Reload player stats
+                                      const stats = await getMatchPlayerStats(selectedMatchForScoring);
+                                      setMatchPlayerStats(stats.data || []);
+                                    } catch (e) {
+                                      alert(e?.response?.data?.detail || 'Failed to add score');
+                                    }
+                                  }}
+                                  className="px-4 py-2 bg-[#38bdf8] hover:bg-[#0ea5e9] text-white rounded font-semibold"
+                                >{runs}</button>
+                              ))}
+                            </div>
+                            <button
+                              onClick={async () => {
+                                const nextBatsman = prompt('Enter next batsman ID:');
+                                if (!nextBatsman) return;
+                                try {
+                                  const player = matchPlayerStats.find(s => s.player?.player_id === nextBatsman || s.player?.id === Number(nextBatsman));
+                                  if (!player) {
+                                    alert('Player not found');
+                                    return;
+                                  }
+                                  const result = await addWicket(selectedMatchForScoring, { next_batsman_id: player.player.id });
+                                  setMatchState(result.data);
+                                  const stats = await getMatchPlayerStats(selectedMatchForScoring);
+                                  setMatchPlayerStats(stats.data || []);
+                                } catch (e) {
+                                  alert(e?.response?.data?.detail || 'Failed to add wicket');
+                                }
+                              }}
+                              className="w-full px-4 py-2 bg-[#ef4444] hover:bg-[#dc2626] text-white rounded"
+                            >Wicket</button>
+                          </div>
+                        )}
+                        
+                        {/* Switch Innings / Complete Match */}
+                        <div className="flex gap-2">
+                          {(matchState.current_over >= (match.tournament.overs_per_match || 20) || 
+                            (matchState.current_batting_team?.id === match.team1?.id ? matchState.team1_wickets : matchState.team2_wickets) >= 10 ||
+                            (matchState.current_batting_team?.id === match.team2?.id && matchState.team2_runs > matchState.team1_runs)) && (
+                            <button
+                              onClick={async () => {
+                                if (matchState.current_batting_team?.id === match.team2?.id) {
+                                  // Second innings complete, can complete match
+                                  const momId = prompt('Enter Man of the Match Player ID (optional):');
+                                  try {
+                                    await completeMatch(selectedMatchForScoring, { man_of_the_match_player_id: momId || null });
+                                    alert('Match completed!');
+                                    setSelectedMatchForScoring(null);
+                                    setMatchState(null);
+                                    await fetchAllData();
+                                  } catch (e) {
+                                    alert(e?.response?.data?.detail || 'Failed to complete match');
+                                  }
+                                } else {
+                                  // First innings complete, switch
+                                  try {
+                                    const result = await switchInnings(selectedMatchForScoring);
+                                    setMatchState(result.data);
+                                    alert('Innings switched!');
+                                  } catch (e) {
+                                    alert(e?.response?.data?.detail || 'Failed to switch innings');
+                                  }
+                                }
+                              }}
+                              className="flex-1 px-4 py-2 bg-[#10b981] hover:bg-[#059669] text-white rounded"
+                            >
+                              {matchState.current_batting_team?.id === match.team2?.id ? 'Complete Match' : 'Switch Innings'}
+                            </button>
+                          )}
+                          <button
+                            onClick={async () => {
+                              if (window.confirm('Cancel match? No stats will be updated.')) {
+                                try {
+                                  await cancelMatch(selectedMatchForScoring);
+                                  alert('Match cancelled');
+                                  setSelectedMatchForScoring(null);
+                                  setMatchState(null);
+                                  await fetchAllData();
+                                } catch (e) {
+                                  alert(e?.response?.data?.detail || 'Failed to cancel match');
+                                }
+                              }
+                            }}
+                            className="px-4 py-2 bg-[#ef4444] hover:bg-[#dc2626] text-white rounded"
+                          >Cancel Match</button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              }
+              
+              return <div className="text-white">Loading...</div>;
+            })()}
           </div>
         </div>
       )}

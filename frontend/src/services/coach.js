@@ -159,6 +159,85 @@ export const listAllTournamentMatches = () => {
   return api.get('/api/tournament-matches/');
 };
 
+/** Start tournament (change status to ongoing) */
+export const startTournament = (tournamentId) => {
+  return api.post(`/api/tournaments/${tournamentId}/start/`);
+};
+
+/** End tournament (update status, create achievements) */
+export const endTournament = (tournamentId) => {
+  return api.post(`/api/tournaments/${tournamentId}/end/`);
+};
+
+/** Get points table for tournament */
+export const getPointsTable = (tournamentId) => {
+  return api.get(`/api/tournaments/${tournamentId}/points-table/`);
+};
+
+/** Get tournament leaderboard */
+export const getTournamentLeaderboard = (tournamentId) => {
+  return api.get(`/api/tournaments/${tournamentId}/leaderboard/`);
+};
+
+/** Start a cricket match */
+export const startMatch = (matchId, { toss_won_by_team_id, batting_first_team_id }) => {
+  return api.post(`/api/tournament-matches/${matchId}/start/`, {
+    toss_won_by_team_id,
+    batting_first_team_id
+  });
+};
+
+/** Set batsmen for match */
+export const setBatsmen = (matchId, { batsman1_id, batsman2_id, current_striker_id }) => {
+  return api.post(`/api/tournament-matches/${matchId}/set-batsmen/`, {
+    batsman1_id,
+    batsman2_id,
+    current_striker_id
+  });
+};
+
+/** Set bowler for match */
+export const setBowler = (matchId, { bowler_id }) => {
+  return api.post(`/api/tournament-matches/${matchId}/set-bowler/`, {
+    bowler_id
+  });
+};
+
+/** Add runs to match score */
+export const addScore = (matchId, { runs }) => {
+  return api.post(`/api/tournament-matches/${matchId}/score/`, { runs });
+};
+
+/** Add wicket to match */
+export const addWicket = (matchId, { next_batsman_id }) => {
+  return api.post(`/api/tournament-matches/${matchId}/wicket/`, { next_batsman_id });
+};
+
+/** Switch innings */
+export const switchInnings = (matchId) => {
+  return api.post(`/api/tournament-matches/${matchId}/switch-innings/`);
+};
+
+/** Complete match */
+export const completeMatch = (matchId, { man_of_the_match_player_id }) => {
+  return api.post(`/api/tournament-matches/${matchId}/complete/`, { man_of_the_match_player_id });
+};
+
+/** Cancel match */
+export const cancelMatch = (matchId) => {
+  return api.post(`/api/tournament-matches/${matchId}/cancel/`);
+};
+
+/** Get match state */
+export const getMatchState = (matchId) => {
+  return api.get(`/api/tournament-matches/${matchId}/state/`);
+};
+
+/** Get player stats for match */
+export const getMatchPlayerStats = (matchId) => {
+  return api.get(`/api/tournament-matches/${matchId}/player-stats/`);
+};
+
 /** List team assignment requests */
 export const listTeamAssignments = () => {
   return api.get('/api/team-assignments/');

@@ -5,7 +5,8 @@ from django.db import transaction
 from .models import (
     PromotionRequest, Player, Sport, CoachingSession, CoachPlayerLinkRequest, Coach, Leaderboard, Notification,
     Team, Match, Attendance, PlayerSportProfile,
-    Manager, ManagerSport, TeamProposal, TeamAssignmentRequest, Tournament, TournamentTeam, TournamentMatch
+    Manager, ManagerSport, TeamProposal, TeamAssignmentRequest, Tournament, TournamentTeam, TournamentMatch,
+    CricketMatchState, MatchPlayerStats, TournamentPoints
 )
 import datetime
 
@@ -58,6 +59,12 @@ class PromotionRequestSerializer(serializers.ModelSerializer):
             "remarks",
         ]
         read_only_fields = ["status", "requested_at", "decided_at", "decided_by"]
+
+
+class SportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Sport
+        fields = ['id', 'name', 'sport_type', 'description']
 
 
 class CoachingSessionCreateSerializer(serializers.ModelSerializer):
@@ -262,12 +269,6 @@ class TeamCreateSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class SportSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Sport
-        fields = ['id', 'name', 'sport_type', 'description']
-
-
 class TeamSerializer(serializers.ModelSerializer):
     coach = serializers.SerializerMethodField()
     manager = UserPublicSerializer(read_only=True)
@@ -469,10 +470,17 @@ class TeamAssignmentRequestSerializer(serializers.ModelSerializer):
 
 class TournamentCreateSerializer(serializers.ModelSerializer):
     manager_id = serializers.IntegerField(required=False, help_text="Required if created by admin")
+    overs_per_match = serializers.IntegerField(default=20, help_text="Overs per match (5, 10, 20, 30, or 50)")
 
     class Meta:
         model = Tournament
-        fields = ["name", "sport", "manager_id", "start_date", "end_date", "location", "description"]
+        fields = ["name", "sport", "manager_id", "overs_per_match", "start_date", "end_date", "location", "description"]
+    
+    def validate_overs_per_match(self, value):
+        valid_overs = [5, 10, 20, 30, 50]
+        if value not in valid_overs:
+            raise serializers.ValidationError(f"Overs per match must be one of: {valid_overs}")
+        return value
 
     def validate(self, attrs):
         request = self.context["request"]
@@ -508,13 +516,23 @@ class TournamentSerializer(serializers.ModelSerializer):
     sport = SportSerializer(read_only=True)
     manager = UserPublicSerializer(read_only=True)
     created_by = UserPublicSerializer(read_only=True)
+    teams_count = serializers.SerializerMethodField()
+    matches_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Tournament
         fields = [
             "id", "name", "sport", "manager", "created_by", "status",
-            "start_date", "end_date", "location", "description", "created_at"
+            "overs_per_match", "start_date", "end_date", "location", "description", "created_at",
+            "teams_count", "matches_count"
         ]
+        read_only_fields = ["teams_count", "matches_count"]
+
+    def get_teams_count(self, obj):
+        return obj.teams.count()
+    
+    def get_matches_count(self, obj):
+        return obj.matches.count()
 
 
 class TournamentTeamSerializer(serializers.ModelSerializer):
@@ -594,14 +612,24 @@ class TournamentMatchSerializer(serializers.ModelSerializer):
     team1 = TeamSerializer(read_only=True)
     team2 = TeamSerializer(read_only=True)
     man_of_the_match = PlayerSerializer(read_only=True)
+    cricket_state = serializers.SerializerMethodField()
 
     class Meta:
         model = TournamentMatch
         fields = [
             "id", "tournament", "team1", "team2", "match_number", "date",
-            "score_team1", "score_team2", "location", "is_completed",
-            "man_of_the_match", "notes"
+            "score_team1", "score_team2", "wickets_team1", "wickets_team2",
+            "location", "status", "is_completed", "man_of_the_match", "notes",
+            "created_at", "cricket_state"
         ]
+        read_only_fields = ["cricket_state"]
+
+    def get_cricket_state(self, obj):
+        try:
+            state = obj.cricket_state
+            return CricketMatchStateSerializer(state).data
+        except CricketMatchState.DoesNotExist:
+            return None
 
 
 class PlayerSportProfileSerializer(serializers.ModelSerializer):
@@ -620,7 +648,7 @@ class PlayerSportProfileUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating PlayerSportProfile (team assignment)"""
     class Meta:
         model = PlayerSportProfile
-        fields = ["team", "coach", "is_active"]
+        fields = ["team", "coach", "is_active", "session_count"]
     
     def validate(self, attrs):
         """Prevent multiple team membership per sport."""
@@ -661,3 +689,75 @@ class PlayerSportProfileUpdateSerializer(serializers.ModelSerializer):
                     })
         
         return attrs
+
+
+# -----------------------------
+# Cricket Match Serializers
+# -----------------------------
+class CricketMatchStateSerializer(serializers.ModelSerializer):
+    toss_won_by = TeamSerializer(read_only=True)
+    batting_first = TeamSerializer(read_only=True)
+    current_batting_team = TeamSerializer(read_only=True)
+    current_bowling_team = TeamSerializer(read_only=True)
+    batsman1 = serializers.SerializerMethodField()
+    batsman2 = serializers.SerializerMethodField()
+    current_striker = serializers.SerializerMethodField()
+    current_bowler = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CricketMatchState
+        fields = [
+            "id", "toss_won_by", "batting_first", "current_batting_team", "current_bowling_team",
+            "batsman1", "batsman2", "current_striker", "current_bowler",
+            "current_over", "current_ball", "total_balls_bowled",
+            "team1_runs", "team1_wickets", "team2_runs", "team2_wickets", "updated_at"
+        ]
+
+    def get_batsman1(self, obj):
+        if obj.batsman1:
+            return {"id": obj.batsman1.id, "player_id": obj.batsman1.player_id, "username": obj.batsman1.user.username}
+        return None
+    
+    def get_batsman2(self, obj):
+        if obj.batsman2:
+            return {"id": obj.batsman2.id, "player_id": obj.batsman2.player_id, "username": obj.batsman2.user.username}
+        return None
+    
+    def get_current_striker(self, obj):
+        if obj.current_striker:
+            return {"id": obj.current_striker.id, "player_id": obj.current_striker.player_id, "username": obj.current_striker.user.username}
+        return None
+    
+    def get_current_bowler(self, obj):
+        if obj.current_bowler:
+            return {"id": obj.current_bowler.id, "player_id": obj.current_bowler.player_id, "username": obj.current_bowler.user.username}
+        return None
+
+
+class MatchPlayerStatsSerializer(serializers.ModelSerializer):
+    player = PlayerSerializer(read_only=True)
+    team = TeamSerializer(read_only=True)
+    match = TournamentMatchSerializer(read_only=True)
+
+    class Meta:
+        model = MatchPlayerStats
+        fields = [
+            "id", "match", "player", "team",
+            "runs_scored", "balls_faced", "fours", "sixes", "is_out", "dismissal_type",
+            "overs_bowled", "runs_conceded", "wickets_taken", "maidens", "wides", "no_balls",
+            "catches", "stumpings", "run_outs",
+            "created_at", "updated_at"
+        ]
+
+
+class TournamentPointsSerializer(serializers.ModelSerializer):
+    tournament = TournamentSerializer(read_only=True)
+    team = TeamSerializer(read_only=True)
+
+    class Meta:
+        model = TournamentPoints
+        fields = [
+            "id", "tournament", "team",
+            "matches_played", "matches_won", "matches_lost", "matches_tied", "matches_no_result",
+            "points", "net_run_rate", "updated_at"
+        ]

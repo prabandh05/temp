@@ -7,6 +7,7 @@ import CoachDashboard from "./pages/CoachDashboard";
 import ManagerDashboard from "./pages/ManagerDashboard";
 import AdminDashboard from "./pages/AdminDashboard";
 import Home from "./pages/Home";
+import TournamentManagement from "./pages/TournamentManagement";
 import PrivateRoute from "./components/PrivateRoute";
 
 function App() {
@@ -23,6 +24,7 @@ function App() {
           <Route path="/coach-dashboard" element={<CoachDashboard />} />
           <Route path="/manager-dashboard" element={<ManagerDashboard />} />
           <Route path="/admin-dashboard" element={<AdminDashboard />} />
+          <Route path="/tournaments" element={<TournamentManagement />} />
         </Route>
       </Routes>
     </Router>

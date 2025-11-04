@@ -65,7 +65,16 @@ export default function AdminDashboard() {
   // Form states
   const [userForm, setUserForm] = useState({ username: "", email: "", password: "", role: "player" });
   const [managerAssignForm, setManagerAssignForm] = useState({ managerId: "", sportId: "" });
-  const [tournamentForm, setTournamentForm] = useState({ name: "", sport_id: "", manager_id: "", start_date: "", end_date: "" });
+  const [tournamentForm, setTournamentForm] = useState({ 
+    name: "", 
+    sport_id: "", 
+    manager_id: "", 
+    location: "",
+    overs_per_match: 20,
+    start_date: "", 
+    end_date: "",
+    description: ""
+  });
 
   const fetchAllData = async () => {
     try {
@@ -165,7 +174,16 @@ export default function AdminDashboard() {
     try {
       await createTournament(tournamentForm);
       setShowTournamentModal(false);
-      setTournamentForm({ name: "", sport_id: "", manager_id: "", start_date: "", end_date: "" });
+      setTournamentForm({ 
+        name: "", 
+        sport_id: "", 
+        manager_id: "", 
+        location: "",
+        overs_per_match: 20,
+        start_date: "", 
+        end_date: "",
+        description: ""
+      });
       fetchAllData();
     } catch (err) {
       alert(err.response?.data?.detail || "Failed to create tournament");
@@ -592,6 +610,30 @@ export default function AdminDashboard() {
             </select>
           </div>
           <div>
+            <label className="block text-sm font-medium text-[#94a3b8] mb-2">Location</label>
+            <input
+              type="text"
+              value={tournamentForm.location}
+              onChange={(e) => setTournamentForm({ ...tournamentForm, location: e.target.value })}
+              className="w-full p-3 bg-[#0f172a] border border-[#334155] rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-[#fbbf24]"
+              placeholder="Tournament location"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[#94a3b8] mb-2">Overs per Match (Cricket)</label>
+            <select
+              value={tournamentForm.overs_per_match}
+              onChange={(e) => setTournamentForm({ ...tournamentForm, overs_per_match: parseInt(e.target.value) })}
+              className="w-full p-3 bg-[#0f172a] border border-[#334155] rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-[#fbbf24]"
+            >
+              <option value={5}>5 Overs</option>
+              <option value={10}>10 Overs</option>
+              <option value={20}>20 Overs</option>
+              <option value={30}>30 Overs</option>
+              <option value={50}>50 Overs</option>
+            </select>
+          </div>
+          <div>
             <label className="block text-sm font-medium text-[#94a3b8] mb-2">Manager (Optional)</label>
             <select
               value={tournamentForm.manager_id}
@@ -608,7 +650,7 @@ export default function AdminDashboard() {
             <div>
               <label className="block text-sm font-medium text-[#94a3b8] mb-2">Start Date</label>
               <input
-                type="date"
+                type="datetime-local"
                 value={tournamentForm.start_date}
                 onChange={(e) => setTournamentForm({ ...tournamentForm, start_date: e.target.value })}
                 className="w-full p-3 bg-[#0f172a] border border-[#334155] rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-[#fbbf24]"
@@ -617,12 +659,22 @@ export default function AdminDashboard() {
             <div>
               <label className="block text-sm font-medium text-[#94a3b8] mb-2">End Date</label>
               <input
-                type="date"
+                type="datetime-local"
                 value={tournamentForm.end_date}
                 onChange={(e) => setTournamentForm({ ...tournamentForm, end_date: e.target.value })}
                 className="w-full p-3 bg-[#0f172a] border border-[#334155] rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-[#fbbf24]"
               />
             </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[#94a3b8] mb-2">Description (Optional)</label>
+            <textarea
+              value={tournamentForm.description}
+              onChange={(e) => setTournamentForm({ ...tournamentForm, description: e.target.value })}
+              className="w-full p-3 bg-[#0f172a] border border-[#334155] rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-[#fbbf24]"
+              rows={3}
+              placeholder="Tournament description"
+            />
           </div>
           <button
             type="submit"

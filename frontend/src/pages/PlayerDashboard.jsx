@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import api from "../services/api";
-import { listNotifications, acceptLinkRequest, rejectLinkRequest, listLinkRequests } from "../services/coach";
-import { Bell, CheckCircle, XCircle } from "lucide-react";
+import { listNotifications, acceptLinkRequest, rejectLinkRequest, listLinkRequests, listTournaments, listTournamentMatches, getPointsTable, getTournamentLeaderboard } from "../services/coach";
+import { Bell, CheckCircle, XCircle, Trophy, Calendar, Eye, EyeOff } from "lucide-react";
 
 export default function PlayerDashboard() {
   const [loading, setLoading] = useState(true);
@@ -19,6 +19,9 @@ export default function PlayerDashboard() {
   const [notifications, setNotifications] = useState([]);
   const [linkRequests, setLinkRequests] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [tournaments, setTournaments] = useState([]);
+  const [tournamentDetails, setTournamentDetails] = useState({});
+  const [showTournamentDetails, setShowTournamentDetails] = useState({});
 
   useEffect(() => {
     let mounted = true;
@@ -26,16 +29,28 @@ export default function PlayerDashboard() {
       setLoading(true);
       setError("");
       try {
-        const [resp, notifsRes, linksRes] = await Promise.all([
+        const [resp, notifsRes, linksRes, tournamentsRes] = await Promise.all([
           api.get("/api/dashboard/player/"),
           listNotifications().catch(() => ({ data: [] })),
           listLinkRequests().catch(() => ({ data: [] })),
+          listTournaments().catch(() => ({ data: [] })),
         ]);
         if (!mounted) return;
         const payload = resp.data;
         setData(payload);
         setNotifications(notifsRes.data || []);
         setLinkRequests(linksRes.data || []);
+        
+        // Filter tournaments where player's teams are participating
+        const playerTeams = payload.profiles?.map(p => p.team?.id).filter(Boolean) || [];
+        const allTournaments = tournamentsRes.data || [];
+        const relevantTournaments = allTournaments.filter(t => {
+          return playerTeams.some(teamId => 
+            t.teams?.some(tt => tt.team?.id === teamId) || 
+            t.teams_count > 0
+          );
+        });
+        setTournaments(relevantTournaments);
         // Initialize selection: use primary_sport if provided, else first team then individual
         const all = payload.available_sports || [];
         const primary = payload.primary_sport || "";
@@ -463,6 +478,167 @@ export default function PlayerDashboard() {
             </div>
           </div>
         )}
+
+        {/* Tournaments Section */}
+        <div className="bg-[#1e293b] p-6 rounded-2xl border border-[#334155] mt-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+              <Trophy size={24} /> My Tournaments
+            </h2>
+          </div>
+          <div className="space-y-3">
+            {tournaments.length > 0 ? (
+              tournaments.map(tournament => (
+                <div key={tournament.id} className="bg-[#0f172a] border border-[#334155] p-4 rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex-1">
+                      <div className="font-medium text-white">{tournament.name}</div>
+                      <div className="text-xs text-[#94a3b8] mt-1">
+                        {tournament.sport?.name || 'Sport'} • {tournament.location || '-'}
+                        {tournament.overs_per_match && ` • ${tournament.overs_per_match} Overs`}
+                        {tournament.status && ` • Status: ${tournament.status}`}
+                      </div>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        const newShowDetails = { ...showTournamentDetails };
+                        newShowDetails[tournament.id] = !newShowDetails[tournament.id];
+                        setShowTournamentDetails(newShowDetails);
+                        
+                        if (newShowDetails[tournament.id]) {
+                          try {
+                            const [matches, points, leaderboard] = await Promise.all([
+                              listTournamentMatches(tournament.id).catch(() => ({ data: [] })),
+                              getPointsTable(tournament.id).catch(() => ({ data: [] })),
+                              getTournamentLeaderboard(tournament.id).catch(() => ({ data: {} }))
+                            ]);
+                            setTournamentDetails({
+                              ...tournamentDetails,
+                              [tournament.id]: {
+                                matches: matches.data || [],
+                                points: points.data || [],
+                                leaderboard: leaderboard.data || {}
+                              }
+                            });
+                          } catch (e) {
+                            console.error('Failed to load tournament details', e);
+                          }
+                        }
+                      }}
+                      className="flex items-center gap-2 px-3 py-1 text-sm border border-[#334155] rounded bg-[#1e293b] hover:bg-[#0f172a] text-white transition-colors"
+                    >
+                      {showTournamentDetails[tournament.id] ? <EyeOff size={16} /> : <Eye size={16} />}
+                      {showTournamentDetails[tournament.id] ? 'Hide' : 'View'} Details
+                    </button>
+                  </div>
+                  
+                  {showTournamentDetails[tournament.id] && tournamentDetails[tournament.id] && (
+                    <div className="mt-3 space-y-3 border-t border-[#334155] pt-3">
+                      {/* Points Table */}
+                      {tournamentDetails[tournament.id].points && tournamentDetails[tournament.id].points.length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-semibold text-white mb-2">Points Table</h3>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="border-b border-[#334155]">
+                                  <th className="text-left p-2 text-[#94a3b8]">Team</th>
+                                  <th className="text-center p-2 text-[#94a3b8]">MP</th>
+                                  <th className="text-center p-2 text-[#94a3b8]">W</th>
+                                  <th className="text-center p-2 text-[#94a3b8]">Pts</th>
+                                  <th className="text-center p-2 text-[#94a3b8]">NRR</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {tournamentDetails[tournament.id].points
+                                  .sort((a, b) => b.points - a.points || b.net_run_rate - a.net_run_rate)
+                                  .map((pt, idx) => (
+                                    <tr key={pt.id || idx} className="border-b border-[#334155]">
+                                      <td className="p-2 text-white">{pt.team?.name || 'Unknown'}</td>
+                                      <td className="text-center p-2 text-[#94a3b8]">{pt.matches_played || 0}</td>
+                                      <td className="text-center p-2 text-[#94a3b8]">{pt.matches_won || 0}</td>
+                                      <td className="text-center p-2 text-white font-bold">{pt.points || 0}</td>
+                                      <td className="text-center p-2 text-[#94a3b8]">{pt.net_run_rate?.toFixed(2) || '0.00'}</td>
+                                    </tr>
+                                  ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Leaderboard */}
+                      {tournamentDetails[tournament.id].leaderboard && (
+                        <div>
+                          <h3 className="text-sm font-semibold text-white mb-2">Leaderboard</h3>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            {tournamentDetails[tournament.id].leaderboard.top_scorer && (
+                              <div className="bg-[#1e293b] p-3 rounded border border-[#334155]">
+                                <div className="text-xs text-[#94a3b8] mb-1">Top Scorer</div>
+                                <div className="text-sm font-bold text-white">
+                                  {tournamentDetails[tournament.id].leaderboard.top_scorer?.player__user__username || 'N/A'}
+                                </div>
+                              </div>
+                            )}
+                            {tournamentDetails[tournament.id].leaderboard.most_wickets && (
+                              <div className="bg-[#1e293b] p-3 rounded border border-[#334155]">
+                                <div className="text-xs text-[#94a3b8] mb-1">Most Wickets</div>
+                                <div className="text-sm font-bold text-white">
+                                  {tournamentDetails[tournament.id].leaderboard.most_wickets?.player__user__username || 'N/A'}
+                                </div>
+                              </div>
+                            )}
+                            {tournamentDetails[tournament.id].leaderboard.most_mom && (
+                              <div className="bg-[#1e293b] p-3 rounded border border-[#334155]">
+                                <div className="text-xs text-[#94a3b8] mb-1">Most MoM</div>
+                                <div className="text-sm font-bold text-white">
+                                  {tournamentDetails[tournament.id].leaderboard.most_mom?.man_of_the_match__user__username || 'N/A'}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Matches */}
+                      {tournamentDetails[tournament.id].matches && tournamentDetails[tournament.id].matches.length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-semibold text-white mb-2 flex items-center gap-2">
+                            <Calendar size={16} /> Matches
+                          </h3>
+                          <div className="space-y-2">
+                            {tournamentDetails[tournament.id].matches.map((match, idx) => (
+                              <div key={match.id || idx} className="bg-[#1e293b] p-2 rounded text-xs">
+                                <div className="flex items-center justify-between">
+                                  <div>
+                                    <span className="font-medium text-white">#{match.match_number}</span> {match.team1?.name || 'T1'} vs {match.team2?.name || 'T2'}
+                                    {match.is_completed && (
+                                      <span className="ml-2 text-[#94a3b8]">
+                                        ({match.score_team1}/{match.wickets_team1} - {match.score_team2}/{match.wickets_team2})
+                                      </span>
+                                    )}
+                                    {match.status === 'in_progress' && (
+                                      <span className="ml-2 text-xs text-[#10b981]">● Live</span>
+                                    )}
+                                  </div>
+                                  <div className="text-xs text-[#94a3b8]">
+                                    {match.is_completed ? '✓ Completed' : match.status === 'in_progress' ? 'In Progress' : 'Scheduled'}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))
+            ) : (
+              <div className="text-sm text-[#94a3b8] text-center py-4">No tournaments found for your teams</div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

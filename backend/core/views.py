@@ -4,11 +4,14 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 import csv
 from io import StringIO
+from django.db import models
+from django.db import transaction
 
 from .models import (
     PromotionRequest, Player, Sport, CoachingSession, PlayerSportProfile, SessionAttendance,
     CoachPlayerLinkRequest, Leaderboard, Notification, Manager, ManagerSport, TeamProposal,
-    TeamAssignmentRequest, Tournament, TournamentTeam, TournamentMatch, Team
+    TeamAssignmentRequest, Tournament, TournamentTeam, TournamentMatch, CricketMatchState,
+    MatchPlayerStats, TournamentPoints, Team
 )
 from django.utils import timezone
 from .serializers import (
@@ -20,6 +23,7 @@ from .serializers import (
     TournamentCreateSerializer, TournamentSerializer, TournamentTeamSerializer, 
     TournamentMatchCreateSerializer, TournamentMatchSerializer,
     ManagerSportSerializer, PlayerSportProfileSerializer, PlayerSportProfileUpdateSerializer,
+    CricketMatchStateSerializer, MatchPlayerStatsSerializer, TournamentPointsSerializer,
 )
 from .permissions import IsAuthenticatedAndPlayer, IsAuthenticatedAndManagerOrAdmin, IsAuthenticatedAndCoach
 from .promotion_services import (
@@ -177,8 +181,21 @@ class CoachingSessionViewSet(viewsets.GenericViewSet):
             except ValueError:
                 errors.append({"row": idx, "player_id": pid, "error": "attended and score must be integers"})
                 continue
-            if attended not in (0, 1) or not (1 <= score <= 10):
-                errors.append({"row": idx, "player_id": pid, "error": "attended must be 0/1; score 1-10"})
+            # Normalize attendance: anything > 1 is treated as 1
+            if attended > 1:
+                attended = 1
+            elif attended < 0:
+                attended = 0
+            # Normalize score: anything > 10 is treated as 10, allow 0-10
+            if score > 10:
+                score = 10
+            elif score < 0:
+                score = 0
+            if attended not in (0, 1):
+                errors.append({"row": idx, "player_id": pid, "error": "attended must be 0/1"})
+                continue
+            if not (0 <= score <= 10):
+                errors.append({"row": idx, "player_id": pid, "error": "score must be 0-10"})
                 continue
 
             try:
@@ -211,6 +228,175 @@ class CoachingSessionViewSet(viewsets.GenericViewSet):
 
         status_code = status.HTTP_200_OK if not errors else status.HTTP_207_MULTI_STATUS
         return Response({"updated": updated, "errors": errors}, status=status_code)
+
+    @action(detail=True, methods=["post"], url_path="end-session")
+    def end_session(self, request, pk=None):
+        """End a session: parse CSV completely, update player stats per sport, mark session inactive."""
+        try:
+            session = self.get_queryset().get(pk=pk)
+        except CoachingSession.DoesNotExist:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        
+        if session.coach_id != request.user.coach.id:
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        
+        if not session.is_active:
+            return Response({"detail": "Session is already ended"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Process CSV file if provided (required for ending session)
+        file = request.FILES.get("file")
+        if not file:
+            return Response({"detail": "CSV file required to end session"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            content = file.read().decode("utf-8")
+        except Exception:
+            return Response({"detail": "Invalid file encoding"}, status=status.HTTP_400_BAD_REQUEST)
+
+        reader = csv.DictReader(StringIO(content))
+        required_cols = {"player_id", "attended", "score"}
+        if set(reader.fieldnames or []) != required_cols:
+            return Response({"detail": f"CSV must have columns: {', '.join(sorted(required_cols))}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Allowed players: under this coach for this sport and active
+        allowed_player_ids = set(
+            PlayerSportProfile.objects.select_related("player").filter(
+                coach=request.user.coach,
+                sport=session.sport,
+                is_active=True,
+                player__is_active=True,
+            ).values_list("player__player_id", flat=True)
+        )
+
+        updated = 0
+        errors = []
+        processed_players = []
+        
+        # Process CSV row by row
+        for idx, row in enumerate(reader, start=2):  # header is line 1
+            pid = (row.get("player_id") or "").strip()
+            attended_val = (row.get("attended") or "").strip()
+            score_val = (row.get("score") or "").strip()
+
+            if not pid:
+                errors.append({"row": idx, "player_id": pid, "error": "Player ID is required"})
+                continue
+
+            if pid not in allowed_player_ids:
+                errors.append({"row": idx, "player_id": pid, "error": "Player not under this coach/sport or inactive"})
+                continue
+            
+            try:
+                attended = int(attended_val) if attended_val else 0
+                score = int(score_val) if score_val else 0
+            except ValueError:
+                errors.append({"row": idx, "player_id": pid, "error": "attended and score must be integers"})
+                continue
+            
+            # Normalize attendance: anything > 1 is treated as 1
+            if attended > 1:
+                attended = 1
+            elif attended < 0:
+                attended = 0
+            
+            # Normalize score: anything > 10 is treated as 10
+            if score > 10:
+                score = 10
+            elif score < 0:
+                score = 0
+
+            try:
+                player = Player.objects.get(player_id=pid)
+            except Player.DoesNotExist:
+                errors.append({"row": idx, "player_id": pid, "error": "Player not found"})
+                continue
+
+            # Get or create PlayerSportProfile for this player and sport
+            try:
+                profile = PlayerSportProfile.objects.get(
+                    player=player,
+                    sport=session.sport,
+                    coach=request.user.coach,
+                    is_active=True
+                )
+            except PlayerSportProfile.DoesNotExist:
+                errors.append({"row": idx, "player_id": pid, "error": "Player profile not found for this sport"})
+                continue
+
+            # Create or update SessionAttendance
+            sa, created = SessionAttendance.objects.get_or_create(
+                session=session,
+                player=player,
+                defaults={
+                    "attended": bool(attended),
+                    "rating": score if attended else 0
+                }
+            )
+            if not created:
+                sa.attended = bool(attended)
+                sa.rating = score if attended else 0
+                sa.save(update_fields=["attended", "rating"])
+
+            # Update PlayerSportProfile: increment session_count if attended
+            if attended == 1:
+                profile.session_count = (profile.session_count or 0) + 1
+                profile.save(update_fields=["session_count"])
+            
+            # Recalculate career_score (average of all session performance scores for this sport)
+            profile.recalculate_career_score()
+            
+            processed_players.append({
+                "player_id": pid,
+                "attended": bool(attended),
+                "score": score if attended else 0
+            })
+            updated += 1
+
+            # Update DailyPerformanceScore for the calendar day
+            from .models import DailyPerformanceScore
+            day = session.session_date.date()
+            dps, _ = DailyPerformanceScore.objects.get_or_create(player=player, date=day)
+            from django.db.models import Avg
+            avg_score = (
+                SessionAttendance.objects.filter(
+                    player=player,
+                    session__session_date__date=day,
+                    attended=True,
+                ).aggregate(Avg("rating"))["rating__avg"] or 0.0
+            )
+            dps.score = float(avg_score)
+            dps.save(update_fields=["score"])
+        
+        if errors:
+            return Response({
+                "detail": "Some rows had errors",
+                "updated": updated,
+                "errors": errors,
+                "processed_players": processed_players
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Mark session as inactive
+        session.is_active = False
+        session.save(update_fields=["is_active"])
+        
+        # Get attendance summary
+        attendances = SessionAttendance.objects.filter(session=session)
+        total_players = attendances.count()
+        attended_count = attendances.filter(attended=True).count()
+        from django.db.models import Avg
+        avg_rating = attendances.filter(attended=True).aggregate(Avg("rating"))["rating__avg"] or 0.0
+        
+        return Response({
+            "detail": "Session ended successfully",
+            "updated_players": updated,
+            "summary": {
+                "total_players": total_players,
+                "attended": attended_count,
+                "absent": total_players - attended_count,
+                "average_rating": round(float(avg_rating), 2) if avg_rating else 0.0
+            },
+            "processed_players": processed_players
+        }, status=status.HTTP_200_OK)
 
 
 class CoachPlayerLinkViewSet(viewsets.GenericViewSet):
@@ -1196,6 +1382,165 @@ class TournamentViewSet(viewsets.GenericViewSet):
         except Tournament.DoesNotExist:
             return Response({"detail": "Tournament not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    @action(detail=True, methods=["post"], url_path="start")
+    def start_tournament(self, request, pk=None):
+        """Start tournament: change status to ongoing."""
+        try:
+            tournament = self.get_queryset().get(pk=pk)
+            if tournament.status != Tournament.Status.UPCOMING:
+                return Response({"detail": "Tournament can only be started from upcoming status"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check if cricket, show not implemented for other sports
+            if tournament.sport.name.lower() != "cricket":
+                return Response({"detail": "Tournament management not implemented for this sport. Only cricket is supported."}, status=status.HTTP_400_BAD_REQUEST)
+            
+            tournament.status = Tournament.Status.ONGOING
+            if not tournament.start_date:
+                tournament.start_date = timezone.now()
+            tournament.save(update_fields=["status", "start_date"])
+            return Response(TournamentSerializer(tournament).data)
+        except Tournament.DoesNotExist:
+            return Response({"detail": "Tournament not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["get"], url_path="points-table")
+    def points_table(self, request, pk=None):
+        """Get points table for tournament."""
+        try:
+            tournament = self.get_queryset().get(pk=pk)
+            points = TournamentPoints.objects.filter(tournament=tournament).select_related("team")
+            return Response(TournamentPointsSerializer(points, many=True).data)
+        except Tournament.DoesNotExist:
+            return Response({"detail": "Tournament not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["get"], url_path="leaderboard")
+    def leaderboard(self, request, pk=None):
+        """Get tournament leaderboard (top scorer, most wickets, most MoM)."""
+        try:
+            tournament = self.get_queryset().get(pk=pk)
+            
+            # Top scorer
+            top_scorer = MatchPlayerStats.objects.filter(
+                match__tournament=tournament
+            ).values("player").annotate(
+                total_runs=models.Sum("runs_scored")
+            ).order_by("-total_runs").first()
+            
+            # Most wickets
+            most_wickets = MatchPlayerStats.objects.filter(
+                match__tournament=tournament
+            ).values("player").annotate(
+                total_wickets=models.Sum("wickets_taken")
+            ).order_by("-total_wickets").first()
+            
+            # Most MoM
+            mom_count = TournamentMatch.objects.filter(
+                tournament=tournament,
+                man_of_the_match__isnull=False
+            ).values("man_of_the_match").annotate(
+                count=models.Count("id")
+            ).order_by("-count").first()
+            
+            return Response({
+                "top_scorer": top_scorer,
+                "most_wickets": most_wickets,
+                "most_mom": mom_count
+            })
+        except Tournament.DoesNotExist:
+            return Response({"detail": "Tournament not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["post"], url_path="end")
+    def end_tournament(self, request, pk=None):
+        """End tournament: update status, create achievements."""
+        try:
+            tournament = self.get_queryset().get(pk=pk)
+            if tournament.status != Tournament.Status.ONGOING:
+                return Response({"detail": "Tournament must be ongoing to end"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get top scorer and most wickets
+            from django.db.models import Sum
+            top_scorer_stats = MatchPlayerStats.objects.filter(
+                match__tournament=tournament
+            ).values("player", "player__user__username").annotate(
+                total_runs=Sum("runs_scored")
+            ).order_by("-total_runs").first()
+            
+            most_wickets_stats = MatchPlayerStats.objects.filter(
+                match__tournament=tournament
+            ).values("player", "player__user__username").annotate(
+                total_wickets=Sum("wickets_taken")
+            ).order_by("-total_wickets").first()
+            
+            # Get winning team (most points)
+            winning_team_points = TournamentPoints.objects.filter(
+                tournament=tournament
+            ).order_by("-points", "-net_run_rate").first()
+            
+            # Create achievements
+            from .models import Achievement
+            achievements_created = []
+            
+            if top_scorer_stats and top_scorer_stats.get("total_runs", 0) > 0:
+                player = Player.objects.get(id=top_scorer_stats["player"])
+                ach, created = Achievement.objects.get_or_create(
+                    player=player,
+                    title=f"Top Scorer - {tournament.name}",
+                    description=f"Highest run scorer in {tournament.name}",
+                    defaults={
+                        "sport": tournament.sport,
+                        "date_awarded": timezone.now().date()
+                    }
+                )
+                if created:
+                    achievements_created.append("Top Scorer")
+            
+            if most_wickets_stats and most_wickets_stats.get("total_wickets", 0) > 0:
+                player = Player.objects.get(id=most_wickets_stats["player"])
+                ach, created = Achievement.objects.get_or_create(
+                    player=player,
+                    title=f"Highest Wicket Taker - {tournament.name}",
+                    description=f"Most wickets in {tournament.name}",
+                    defaults={
+                        "sport": tournament.sport,
+                        "date_awarded": timezone.now().date()
+                    }
+                )
+                if created:
+                    achievements_created.append("Highest Wicket Taker")
+            
+            if winning_team_points:
+                # Create achievements for all players in winning team
+                winning_team = winning_team_points.team
+                team_players = PlayerSportProfile.objects.filter(
+                    team=winning_team,
+                    sport=tournament.sport,
+                    is_active=True
+                ).select_related("player")
+                
+                for profile in team_players:
+                    ach, created = Achievement.objects.get_or_create(
+                        player=profile.player,
+                        title=f"Tournament Winner - {tournament.name}",
+                        description=f"Won {tournament.name} with {winning_team.name}",
+                        defaults={
+                            "sport": tournament.sport,
+                            "date_awarded": timezone.now().date()
+                        }
+                    )
+                    if created:
+                        achievements_created.append(f"Winner: {profile.player.user.username}")
+            
+            tournament.status = Tournament.Status.COMPLETED
+            tournament.end_date = timezone.now()
+            tournament.save(update_fields=["status", "end_date"])
+            
+            return Response({
+                "detail": "Tournament ended successfully",
+                "achievements_created": achievements_created,
+                "winning_team": winning_team_points.team.name if winning_team_points else None
+            })
+        except Tournament.DoesNotExist:
+            return Response({"detail": "Tournament not found"}, status=status.HTTP_404_NOT_FOUND)
+
 
 # -----------------------------
 # Tournament Match ViewSet
@@ -1237,6 +1582,533 @@ class TournamentMatchViewSet(viewsets.ModelViewSet):
                 date_awarded=match.date.date() if match.date else timezone.now().date(),
                 defaults={"sport": match.tournament.sport}
             )
+
+    @action(detail=True, methods=["post"], url_path="start")
+    def start_match(self, request, pk=None):
+        """Start a cricket match: create cricket state, set toss, select batsmen."""
+        try:
+            match = self.get_queryset().get(pk=pk)
+            
+            # Check if cricket
+            if match.tournament.sport.name.lower() != "cricket":
+                return Response({"detail": "Match management only available for cricket"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check if already started
+            if match.status == TournamentMatch.Status.IN_PROGRESS:
+                return Response({"detail": "Match already in progress"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get toss and batting first from request
+            toss_won_by_id = request.data.get("toss_won_by_team_id")
+            batting_first_id = request.data.get("batting_first_team_id")
+            
+            if not toss_won_by_id or not batting_first_id:
+                return Response({"detail": "toss_won_by_team_id and batting_first_team_id required"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            try:
+                toss_team = Team.objects.get(id=toss_won_by_id)
+                batting_team = Team.objects.get(id=batting_first_id)
+            except Team.DoesNotExist:
+                return Response({"detail": "Team not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            if toss_team not in [match.team1, match.team2] or batting_team not in [match.team1, match.team2]:
+                return Response({"detail": "Teams must be part of the match"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            bowling_team = match.team2 if batting_team == match.team1 else match.team1
+            
+            # Create cricket state
+            state, created = CricketMatchState.objects.get_or_create(
+                match=match,
+                defaults={
+                    "toss_won_by": toss_team,
+                    "batting_first": batting_team,
+                    "current_batting_team": batting_team,
+                    "current_bowling_team": bowling_team,
+                    "team1_runs": 0,
+                    "team1_wickets": 0,
+                    "team2_runs": 0,
+                    "team2_wickets": 0,
+                }
+            )
+            
+            if not created:
+                state.toss_won_by = toss_team
+                state.batting_first = batting_team
+                state.current_batting_team = batting_team
+                state.current_bowling_team = bowling_team
+                state.save()
+            
+            # Initialize MatchPlayerStats for all players in both teams
+            for team in [match.team1, match.team2]:
+                team_players = PlayerSportProfile.objects.filter(
+                    team=team,
+                    sport=match.tournament.sport,
+                    is_active=True
+                ).select_related("player")
+                
+                for profile in team_players:
+                    MatchPlayerStats.objects.get_or_create(
+                        match=match,
+                        player=profile.player,
+                        team=team,
+                        defaults={
+                            "runs_scored": 0,
+                            "balls_faced": 0,
+                            "wickets_taken": 0,
+                            "runs_conceded": 0,
+                        }
+                    )
+            
+            # Initialize TournamentPoints if not exists
+            for team in [match.team1, match.team2]:
+                TournamentPoints.objects.get_or_create(
+                    tournament=match.tournament,
+                    team=team
+                )
+            
+            match.status = TournamentMatch.Status.IN_PROGRESS
+            match.save(update_fields=["status"])
+            
+            return Response({
+                "detail": "Match started",
+                "match": TournamentMatchSerializer(match).data,
+                "state": CricketMatchStateSerializer(state).data
+            })
+        except TournamentMatch.DoesNotExist:
+            return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["post"], url_path="set-batsmen")
+    def set_batsmen(self, request, pk=None):
+        """Set the two batsmen for the current batting team."""
+        try:
+            match = self.get_queryset().get(pk=pk)
+            state = match.cricket_state
+            
+            if not state:
+                return Response({"detail": "Match not started. Start match first."}, status=status.HTTP_400_BAD_REQUEST)
+            
+            batsman1_id = request.data.get("batsman1_id")
+            batsman2_id = request.data.get("batsman2_id")
+            current_striker_id = request.data.get("current_striker_id", batsman1_id)
+            
+            if not batsman1_id or not batsman2_id:
+                return Response({"detail": "batsman1_id and batsman2_id required"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Verify players are in current batting team
+            batting_team = state.current_batting_team
+            team_player_ids = set(
+                PlayerSportProfile.objects.filter(
+                    team=batting_team,
+                    sport=match.tournament.sport,
+                    is_active=True
+                ).values_list("player_id", flat=True)
+            )
+            
+            try:
+                batsman1 = Player.objects.get(id=batsman1_id)
+                batsman2 = Player.objects.get(id=batsman2_id)
+                current_striker = Player.objects.get(id=current_striker_id) if current_striker_id else batsman1
+            except Player.DoesNotExist:
+                return Response({"detail": "Player not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            if batsman1.id not in team_player_ids or batsman2.id not in team_player_ids:
+                return Response({"detail": "Players must be in current batting team"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            if batsman1.id == batsman2.id:
+                return Response({"detail": "Batsmen must be different"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            state.batsman1 = batsman1
+            state.batsman2 = batsman2
+            state.current_striker = current_striker
+            state.save(update_fields=["batsman1", "batsman2", "current_striker"])
+            
+            return Response(CricketMatchStateSerializer(state).data)
+        except TournamentMatch.DoesNotExist:
+            return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["post"], url_path="set-bowler")
+    def set_bowler(self, request, pk=None):
+        """Set the current bowler (only after over completion)."""
+        try:
+            match = self.get_queryset().get(pk=pk)
+            state = match.cricket_state
+            
+            if not state:
+                return Response({"detail": "Match not started"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            bowler_id = request.data.get("bowler_id")
+            if not bowler_id:
+                return Response({"detail": "bowler_id required"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Verify player is in current bowling team
+            bowling_team = state.current_bowling_team
+            team_player_ids = set(
+                PlayerSportProfile.objects.filter(
+                    team=bowling_team,
+                    sport=match.tournament.sport,
+                    is_active=True
+                ).values_list("player_id", flat=True)
+            )
+            
+            try:
+                bowler = Player.objects.get(id=bowler_id)
+            except Player.DoesNotExist:
+                return Response({"detail": "Player not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            if bowler.id not in team_player_ids:
+                return Response({"detail": "Player must be in current bowling team"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            state.current_bowler = bowler
+            state.save(update_fields=["current_bowler"])
+            
+            return Response(CricketMatchStateSerializer(state).data)
+        except TournamentMatch.DoesNotExist:
+            return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["post"], url_path="score")
+    def add_score(self, request, pk=None):
+        """Add runs to current score (0, 1, 2, 3, 4, 5, 6)."""
+        try:
+            match = self.get_queryset().get(pk=pk)
+            state = match.cricket_state
+            
+            if not state or match.status != TournamentMatch.Status.IN_PROGRESS:
+                return Response({"detail": "Match not in progress"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            runs = request.data.get("runs")
+            if runs is None:
+                return Response({"detail": "runs required (0-6)"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            try:
+                runs = int(runs)
+            except (ValueError, TypeError):
+                return Response({"detail": "runs must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            if runs < 0 or runs > 6:
+                return Response({"detail": "runs must be between 0 and 6"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            if not state.current_striker or not state.current_bowler:
+                return Response({"detail": "Batsman and bowler must be set"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Update team score
+            if state.current_batting_team == match.team1:
+                state.team1_runs += runs
+                match.score_team1 = state.team1_runs
+            else:
+                state.team2_runs += runs
+                match.score_team2 = state.team2_runs
+            
+            # Update batsman stats
+            striker_stats, _ = MatchPlayerStats.objects.get_or_create(
+                match=match,
+                player=state.current_striker,
+                team=state.current_batting_team
+            )
+            striker_stats.runs_scored += runs
+            striker_stats.balls_faced += 1
+            if runs == 4:
+                striker_stats.fours += 1
+            elif runs == 6:
+                striker_stats.sixes += 1
+            striker_stats.save()
+            
+            # Update bowler stats
+            bowler_stats, _ = MatchPlayerStats.objects.get_or_create(
+                match=match,
+                player=state.current_bowler,
+                team=state.current_bowling_team
+            )
+            bowler_stats.runs_conceded += runs
+            bowler_stats.overs_bowled = float(state.total_balls_bowled) / 6.0
+            bowler_stats.save()
+            
+            # Update ball count
+            state.current_ball += 1
+            state.total_balls_bowled += 1
+            
+            # Check if over is complete (6 balls)
+            if state.current_ball >= 6:
+                state.current_ball = 0
+                state.current_over += 1
+                # Switch striker on odd runs
+                if runs % 2 == 1:
+                    state.current_striker = state.batsman2 if state.current_striker == state.batsman1 else state.batsman1
+            
+            state.save()
+            match.save(update_fields=["score_team1", "score_team2"])
+            
+            # Check if match should end (all overs completed or 10 wickets)
+            max_overs = match.tournament.overs_per_match
+            current_wickets = state.team1_wickets if state.current_batting_team == match.team1 else state.team2_wickets
+            
+            if state.current_over >= max_overs or current_wickets >= 10:
+                # Match innings complete - will need to switch teams or end match
+                pass
+            
+            return Response(CricketMatchStateSerializer(state).data)
+        except TournamentMatch.DoesNotExist:
+            return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["post"], url_path="wicket")
+    def add_wicket(self, request, pk=None):
+        """Add a wicket: mark batsman out, select next batsman."""
+        try:
+            match = self.get_queryset().get(pk=pk)
+            state = match.cricket_state
+            
+            if not state or match.status != TournamentMatch.Status.IN_PROGRESS:
+                return Response({"detail": "Match not in progress"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            if not state.current_striker:
+                return Response({"detail": "No batsman on strike"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            next_batsman_id = request.data.get("next_batsman_id")
+            if not next_batsman_id:
+                return Response({"detail": "next_batsman_id required"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Mark current striker as out
+            striker_stats, _ = MatchPlayerStats.objects.get_or_create(
+                match=match,
+                player=state.current_striker,
+                team=state.current_batting_team
+            )
+            striker_stats.is_out = True
+            striker_stats.balls_faced += 1
+            striker_stats.save()
+            
+            # Update bowler stats
+            if state.current_bowler:
+                bowler_stats, _ = MatchPlayerStats.objects.get_or_create(
+                    match=match,
+                    player=state.current_bowler,
+                    team=state.current_bowling_team
+                )
+                bowler_stats.wickets_taken += 1
+                bowler_stats.overs_bowled = float(state.total_balls_bowled) / 6.0
+                bowler_stats.save()
+            
+            # Update wickets
+            if state.current_batting_team == match.team1:
+                state.team1_wickets += 1
+                match.wickets_team1 = state.team1_wickets
+            else:
+                state.team2_wickets += 1
+                match.wickets_team2 = state.team2_wickets
+            
+            # Set next batsman
+            try:
+                next_batsman = Player.objects.get(id=next_batsman_id)
+            except Player.DoesNotExist:
+                return Response({"detail": "Next batsman not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            # Verify next batsman is in batting team
+            team_player_ids = set(
+                PlayerSportProfile.objects.filter(
+                    team=state.current_batting_team,
+                    sport=match.tournament.sport,
+                    is_active=True
+                ).values_list("player_id", flat=True)
+            )
+            
+            if next_batsman.id not in team_player_ids:
+                return Response({"detail": "Next batsman must be in batting team"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Replace the out batsman
+            if state.current_striker == state.batsman1:
+                state.batsman1 = next_batsman
+                state.current_striker = next_batsman
+            else:
+                state.batsman2 = next_batsman
+                state.current_striker = next_batsman
+            
+            # Update ball count
+            state.current_ball += 1
+            state.total_balls_bowled += 1
+            
+            if state.current_ball >= 6:
+                state.current_ball = 0
+                state.current_over += 1
+            
+            state.save()
+            match.save(update_fields=["wickets_team1", "wickets_team2"])
+            
+            # Check if all out (10 wickets)
+            current_wickets = state.team1_wickets if state.current_batting_team == match.team1 else state.team2_wickets
+            if current_wickets >= 10:
+                # Switch innings or end match
+                pass
+            
+            return Response(CricketMatchStateSerializer(state).data)
+        except TournamentMatch.DoesNotExist:
+            return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["post"], url_path="switch-innings")
+    def switch_innings(self, request, pk=None):
+        """Switch batting/bowling teams after first innings."""
+        try:
+            match = self.get_queryset().get(pk=pk)
+            state = match.cricket_state
+            
+            if not state:
+                return Response({"detail": "Match not started"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Switch teams
+            state.current_batting_team, state.current_bowling_team = state.current_bowling_team, state.current_batting_team
+            
+            # Reset over and ball
+            state.current_over = 0
+            state.current_ball = 0
+            
+            # Reset batsmen
+            state.batsman1 = None
+            state.batsman2 = None
+            state.current_striker = None
+            state.current_bowler = None
+            
+            state.save()
+            
+            return Response(CricketMatchStateSerializer(state).data)
+        except TournamentMatch.DoesNotExist:
+            return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["post"], url_path="complete")
+    def complete_match(self, request, pk=None):
+        """Complete match: update stats, points table, achievements."""
+        try:
+            match = self.get_queryset().get(pk=pk)
+            
+            if match.status != TournamentMatch.Status.IN_PROGRESS:
+                return Response({"detail": "Match must be in progress to complete"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            man_of_the_match_id = request.data.get("man_of_the_match_player_id")
+            if man_of_the_match_id:
+                try:
+                    mom_player = Player.objects.get(player_id=man_of_the_match_id)
+                    match.man_of_the_match = mom_player
+                except Player.DoesNotExist:
+                    return Response({"detail": "Man of the match player not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            # Determine winner
+            state = match.cricket_state
+            if state:
+                winner = None
+                if state.team1_runs > state.team2_runs:
+                    winner = match.team1
+                elif state.team2_runs > state.team1_runs:
+                    winner = match.team2
+                # else: tie (no winner)
+                
+                # Update points table
+                for team in [match.team1, match.team2]:
+                    points_entry, _ = TournamentPoints.objects.get_or_create(
+                        tournament=match.tournament,
+                        team=team
+                    )
+                    points_entry.matches_played += 1
+                    
+                    if winner:
+                        if team == winner:
+                            points_entry.matches_won += 1
+                            points_entry.points += 2
+                        else:
+                            points_entry.matches_lost += 1
+                    # Tie handling can be added later
+                    
+                    points_entry.save()
+            
+            # Update player career stats from match stats
+            match_stats = MatchPlayerStats.objects.filter(match=match).select_related("player", "team")
+            for stat in match_stats:
+                # Update cricket stats in PlayerSportProfile
+                profile = PlayerSportProfile.objects.filter(
+                    player=stat.player,
+                    sport=match.tournament.sport,
+                    is_active=True
+                ).first()
+                
+                if profile:
+                    # Update cricket-specific stats
+                    from .models import CricketStats
+                    cricket_stats, _ = CricketStats.objects.get_or_create(
+                        profile=profile
+                    )
+                    cricket_stats.runs += stat.runs_scored
+                    cricket_stats.wickets += stat.wickets_taken
+                    cricket_stats.matches_played += 1
+                    
+                    # Recalculate averages
+                    if cricket_stats.matches_played > 0:
+                        cricket_stats.average = cricket_stats.runs / cricket_stats.matches_played if cricket_stats.matches_played > 0 else 0
+                    
+                    cricket_stats.save()
+            
+            # Create Man of the Match achievement
+            if match.man_of_the_match:
+                from .models import Achievement
+                Achievement.objects.get_or_create(
+                    player=match.man_of_the_match,
+                    title=f"Man of the Match - {match.tournament.name}",
+                    description=f"Man of the Match in {match.team1.name} vs {match.team2.name}",
+                    defaults={
+                        "sport": match.tournament.sport,
+                        "date_awarded": match.date.date() if match.date else timezone.now().date()
+                    }
+                )
+            
+            match.status = TournamentMatch.Status.COMPLETED
+            match.is_completed = True
+            match.save(update_fields=["status", "is_completed", "man_of_the_match"])
+            
+            return Response({
+                "detail": "Match completed",
+                "match": TournamentMatchSerializer(match).data
+            })
+        except TournamentMatch.DoesNotExist:
+            return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["get"], url_path="state")
+    def get_match_state(self, request, pk=None):
+        """Get current match state."""
+        try:
+            match = self.get_queryset().get(pk=pk)
+            try:
+                state = match.cricket_state
+                return Response(CricketMatchStateSerializer(state).data)
+            except CricketMatchState.DoesNotExist:
+                return Response({"detail": "Match not started"}, status=status.HTTP_404_NOT_FOUND)
+        except TournamentMatch.DoesNotExist:
+            return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["get"], url_path="player-stats")
+    def get_player_stats(self, request, pk=None):
+        """Get player stats for this match."""
+        try:
+            match = self.get_queryset().get(pk=pk)
+            stats = MatchPlayerStats.objects.filter(match=match).select_related("player", "team")
+            return Response(MatchPlayerStatsSerializer(stats, many=True).data)
+        except TournamentMatch.DoesNotExist:
+            return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel_match(self, request, pk=None):
+        """Cancel match: set to no result, don't update stats."""
+        try:
+            match = self.get_queryset().get(pk=pk)
+            match.status = TournamentMatch.Status.NO_RESULT
+            
+            # Update points table for no result
+            for team in [match.team1, match.team2]:
+                points_entry, _ = TournamentPoints.objects.get_or_create(
+                    tournament=match.tournament,
+                    team=team
+                )
+                points_entry.matches_played += 1
+                points_entry.matches_no_result += 1
+                points_entry.save()
+            
+            match.save(update_fields=["status"])
+            return Response({"detail": "Match cancelled", "match": TournamentMatchSerializer(match).data})
+        except TournamentMatch.DoesNotExist:
+            return Response({"detail": "Match not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 # -----------------------------
